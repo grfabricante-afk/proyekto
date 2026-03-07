@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and state",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "status": { "type": "string", "enum": ["unplaced", "placed"] },
+        "currentStep": { "type": "string" },
+        "baselineRole": { "type": "string" },
+        "experienceLevel": { "type": "string" },
+        "baselineRoles": { 
+          "type": "array", 
+          "items": { 
+            "type": "object",
+            "properties": {
+              "role": { "type": "string" },
+              "experience": { "type": "string" }
+            }
+          }
+        },
+        "baselineSkills": { 
+          "type": "array", 
+          "items": { 
+            "type": "object",
+            "properties": {
+              "skill": { "type": "string" },
+              "experience": { "type": "string" }
+            }
+          }
+        },
+        "averageScore": { "type": "number" },
+        "assignedTrackId": { "type": "string" },
+        "completedModules": { "type": "array", "items": { "type": "string" } },
+        "completedTopics": { "type": "array", "items": { "type": "string" } },
+        "assessmentResults": { "type": "object" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User documents indexed by their Firebase Auth UID"
+    }
+  }
+}

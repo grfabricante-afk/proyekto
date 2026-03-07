@@ -1,5 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  onAuthStateChanged, 
+  signOut,
+  User as FirebaseUser
+} from 'firebase/auth';
+import { 
+  doc, 
+  setDoc, 
+  onSnapshot,
+  getDocFromServer
+} from 'firebase/firestore';
+import { auth, db } from './firebase';
 import { 
   UserPlus, 
   UserCheck, 
@@ -30,7 +44,7 @@ import {
   Map
 } from 'lucide-react';
 import { cn } from './lib/utils';
-import { VAStatus, ProgramStep, UserState, TRACKS, Track, Skill, ASSESSMENT_QUESTIONS } from './types';
+import { VAStatus, ProgramStep, UserState, TRACKS, Track, Skill, ASSESSMENT_QUESTIONS, BASELINE_ROLES, BASELINE_SKILLS, EXPERIENCE_LEVELS } from './types';
 
 const SkillModal = ({ skill, onClose }: { skill: Skill; onClose: () => void }) => (
   <motion.div 
@@ -64,20 +78,188 @@ const SkillModal = ({ skill, onClose }: { skill: Skill; onClose: () => void }) =
   </motion.div>
 );
 
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: any;
+}
+
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: React.ErrorInfo) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-zinc-50 p-6">
+          <div className="max-w-md w-full glass-card p-10 rounded-[2.5rem] text-center space-y-6">
+            <div className="w-16 h-16 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center mx-auto">
+              <Activity className="w-8 h-8" />
+            </div>
+            <h2 className="text-2xl font-bold text-zinc-900">Something went wrong</h2>
+            <p className="text-zinc-500 text-sm">
+              We encountered an unexpected error. Please try refreshing the page.
+            </p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full py-4 bg-zinc-900 text-white rounded-2xl font-bold hover:bg-zinc-800 transition-all"
+            >
+              Refresh Page
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
+  );
+}
+
+function AppContent() {
   const [state, setState] = useState<UserState>({
     status: null,
     currentStep: 'entry',
+    baselineRoles: [],
+    baselineSkills: [],
     baselineRole: null,
     experienceLevel: null,
     assessmentResults: null,
     averageScore: null,
     assignedTrack: null,
+    recommendedTrackId: null,
     completedModules: [],
     completedTopics: [],
   });
 
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [showLoginModal, setShowLoginModal] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [baselineSubStep, setBaselineSubStep] = useState<'roles' | 'skills'>('roles');
+
+  // Test Connection
+  useEffect(() => {
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+        }
+      }
+    };
+    testConnection();
+  }, []);
+
+  // Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setIsLoggedIn(!!u);
+      setIsAuthReady(true);
+    });
+    return unsubscribe;
+  }, []);
+
+  // Firestore Listener
+  useEffect(() => {
+    if (!user) return;
+    
+    const unsubscribe = onSnapshot(doc(db, 'users', user.uid), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setState(prev => ({
+          ...prev,
+          ...data,
+          assignedTrack: TRACKS.find(t => t.id === data.assignedTrackId) || prev.assignedTrack
+        }));
+      }
+    }, (error) => {
+      handleFirestoreError(error, 'get', `users/${user.uid}`);
+    });
+    
+    return unsubscribe;
+  }, [user]);
+
+  const handleFirestoreError = (error: any, operationType: string, path: string | null) => {
+    const errInfo = {
+      error: error instanceof Error ? error.message : String(error),
+      authInfo: {
+        userId: auth.currentUser?.uid,
+        email: auth.currentUser?.email,
+        emailVerified: auth.currentUser?.emailVerified,
+        isAnonymous: auth.currentUser?.isAnonymous,
+        tenantId: auth.currentUser?.tenantId,
+        providerInfo: auth.currentUser?.providerData.map(provider => ({
+          providerId: provider.providerId,
+          displayName: provider.displayName,
+          email: provider.email,
+          photoUrl: provider.photoURL
+        })) || []
+      },
+      operationType,
+      path
+    };
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+    throw new Error(JSON.stringify(errInfo));
+  };
+
+  const saveState = async (newState: UserState) => {
+    if (!user) return;
+    try {
+      const { assignedTrack, ...rest } = newState;
+      await setDoc(doc(db, 'users', user.uid), {
+        ...rest,
+        assignedTrackId: assignedTrack?.id || null,
+        uid: user.uid,
+        email: user.email,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (error) {
+      handleFirestoreError(error, 'write', `users/${user.uid}`);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+      setShowLoginModal(false);
+    } catch (error) {
+      console.error("Login failed:", error);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      resetApp();
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
+  };
 
   const steps: { id: ProgramStep; label: string; icon: any }[] = [
     { id: 'entry', label: 'Discovery', icon: Search },
@@ -94,17 +276,47 @@ export default function App() {
 
   const currentStepIndex = steps.findIndex(s => s.id === state.currentStep);
 
-  const handleStatusSelect = (status: VAStatus) => {
-    setState(prev => ({ ...prev, status, currentStep: 'baseline' }));
+  const getTier = (score: number | null) => {
+    if (score === null) return null;
+    if (score < 70) return { name: 'Tier 1', label: 'Entry', color: 'bg-zinc-100 text-zinc-700', border: 'border-zinc-200' };
+    if (score < 85) return { name: 'Tier 2', label: 'Specialist', color: 'bg-emerald-100 text-emerald-700', border: 'border-emerald-200' };
+    return { name: 'Tier 3', label: 'Expert', color: 'bg-indigo-100 text-indigo-700', border: 'border-indigo-200' };
   };
 
-  const handleBaselineSubmit = (role: string, exp: string) => {
-    setState(prev => ({ 
-      ...prev, 
-      baselineRole: role, 
-      experienceLevel: exp, 
-      currentStep: 'assessment' 
-    }));
+  const getTieredRate = (score: number | null) => {
+    if (score === null) return "$8-10/hr";
+    if (score < 70) return "$8-10/hr";
+    if (score < 85) return "$12-15/hr";
+    return "$18-25/hr";
+  };
+
+  const handleStatusSelect = (status: VAStatus) => {
+    const newState = { ...state, status, currentStep: 'baseline' as ProgramStep };
+    setState(newState);
+    saveState(newState);
+  };
+
+  const handleBaselineSubmit = () => {
+    // Basic track assignment based on selected roles
+    let assignedTrackId = 'medical-receptionist';
+    
+    if (state.baselineRoles.some(r => r.role === 'Medical Biller')) assignedTrackId = 'medical-biller';
+    else if (state.baselineRoles.some(r => r.role === 'Medical Coder')) assignedTrackId = 'medical-coder';
+    else if (state.baselineRoles.some(r => r.role === 'Medical Scribe')) assignedTrackId = 'medical-scribe';
+    else if (state.baselineRoles.some(r => r.role === 'Health Educator')) assignedTrackId = 'health-educator';
+    else if (state.baselineRoles.some(r => r.role === 'Dental Biller')) assignedTrackId = 'dental-biller';
+    else if (state.baselineRoles.some(r => r.role === 'Dental Receptionist')) assignedTrackId = 'dental-receptionist';
+    else if (state.baselineRoles.some(r => r.role === 'Medical Administrative Assistant')) assignedTrackId = 'medical-admin-assistant';
+
+    const track = TRACKS.find(t => t.id === assignedTrackId) || TRACKS[0];
+
+    const newState = { 
+      ...state, 
+      currentStep: 'assessment' as ProgramStep,
+      assignedTrack: track
+    };
+    setState(newState);
+    saveState(newState);
   };
 
   const [currentQuestionIdx, setCurrentQuestionIdx] = useState(0);
@@ -152,7 +364,7 @@ export default function App() {
 
     const averageScore = Math.round(totalScore / categories.length);
 
-    // 10x Right-skilling logic: Refined Pathways
+    // 10x Right-skilling logic: Identify the best aptitude match
     const categoryMap: Record<string, string[]> = {
       'dental-billing': ['dental-biller'],
       'ehr-navigation': ['medical-scribe', 'medical-admin-assistant'],
@@ -163,16 +375,17 @@ export default function App() {
 
     const highestCategory = Object.entries(finalResults).reduce((a, b) => a[1] > b[1] ? a : b)[0];
     const possibleTracks = categoryMap[highestCategory] || ['medical-receptionist'];
-    const assignedId = possibleTracks[Math.floor(Math.random() * possibleTracks.length)];
-    const assigned = TRACKS.find(t => t.id === assignedId) || TRACKS[0];
+    const recommendedId = possibleTracks[Math.floor(Math.random() * possibleTracks.length)];
 
-    setState(prev => ({ 
-      ...prev, 
+    const newState = { 
+      ...state, 
       assessmentResults: finalResults, 
       averageScore,
-      currentStep: 'assignment',
-      assignedTrack: assigned
-    }));
+      currentStep: 'assignment' as ProgramStep,
+      recommendedTrackId: recommendedId
+    };
+    setState(newState);
+    saveState(newState);
   };
 
   const toggleTopic = (topic: string, moduleId: string) => {
@@ -190,14 +403,18 @@ export default function App() {
         ? [...prev.completedModules.filter(id => id !== moduleId), moduleId]
         : prev.completedModules.filter(id => id !== moduleId);
 
-      return { ...prev, completedTopics: newTopics, completedModules: newModules };
+      const newState = { ...prev, completedTopics: newTopics, completedModules: newModules };
+      saveState(newState);
+      return newState;
     });
   };
 
   const nextStep = () => {
     const nextIdx = currentStepIndex + 1;
     if (nextIdx < steps.length) {
-      setState(prev => ({ ...prev, currentStep: steps[nextIdx].id }));
+      const newState = { ...state, currentStep: steps[nextIdx].id };
+      setState(newState);
+      saveState(newState);
     }
   };
 
@@ -205,18 +422,33 @@ export default function App() {
     setState({
       status: null,
       currentStep: 'entry',
+      baselineRoles: [],
+      baselineSkills: [],
       baselineRole: null,
       experienceLevel: null,
       assessmentResults: null,
       averageScore: null,
       assignedTrack: null,
+      recommendedTrackId: null,
       completedModules: [],
       completedTopics: [],
     });
     setCurrentQuestionIdx(0);
     setAnswers({});
     setShowInsight(false);
+    setBaselineSubStep('roles');
   };
+
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+          <p className="text-zinc-500 font-bold uppercase tracking-widest text-xs">Initializing Session...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 flex flex-col">
@@ -241,6 +473,21 @@ export default function App() {
               className="text-xs font-bold uppercase tracking-widest text-zinc-500 hover:text-zinc-900 transition-colors hidden sm:block"
             >
               Home
+            </button>
+            <button 
+              onClick={() => {
+                if (isLoggedIn) {
+                  setState(prev => ({ ...prev, currentStep: 'profile' }));
+                } else {
+                  setShowLoginModal(true);
+                }
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-zinc-100 hover:bg-zinc-200 rounded-full transition-all group"
+            >
+              <div className="w-6 h-6 bg-white rounded-full flex items-center justify-center shadow-sm group-hover:bg-emerald-600 group-hover:text-white transition-colors">
+                <User className="w-4 h-4" />
+              </div>
+              <span className="text-xs font-bold uppercase tracking-widest text-zinc-600">{isLoggedIn ? 'Profile' : 'Login'}</span>
             </button>
             {state.status && (
               <span className={cn(
@@ -314,18 +561,6 @@ export default function App() {
                 </p>
               </div>
 
-              {/* Step by Step Process */}
-              <div className="grid grid-cols-3 md:grid-cols-9 gap-2">
-                {steps.map((step, i) => (
-                  <div key={step.id} className="p-3 glass-card rounded-xl text-center space-y-1 border-dashed border-zinc-200">
-                    <div className="w-6 h-6 bg-zinc-100 rounded-full flex items-center justify-center mx-auto text-[10px] font-bold text-zinc-400">
-                      {i + 1}
-                    </div>
-                    <p className="text-[8px] font-bold uppercase tracking-tighter text-zinc-500 truncate">{step.label}</p>
-                  </div>
-                ))}
-              </div>
-
               <div className="grid md:grid-cols-2 gap-6 max-w-4xl mx-auto">
                 <button 
                   onClick={() => handleStatusSelect('unplaced')}
@@ -374,7 +609,7 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 1.05 }}
-              className="max-w-2xl mx-auto space-y-12"
+              className="max-w-3xl mx-auto space-y-12"
             >
               <div className="text-center space-y-4">
                 <div className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-100 text-zinc-600 rounded-full text-xs font-bold uppercase tracking-widest">
@@ -382,70 +617,185 @@ export default function App() {
                 </div>
                 <h2 className="text-5xl font-bold tracking-tight text-zinc-900">Establish Your Starting Point</h2>
                 <p className="text-zinc-500 text-lg">
-                  To provide the most accurate diagnostic, we need to understand your current professional context.
+                  {baselineSubStep === 'roles' 
+                    ? "First, let's identify your previous professional roles and how long you've served in them."
+                    : "Next, tell us about your core healthcare competencies and your proficiency level in each."}
                 </p>
+                
+                <div className="flex justify-center gap-2 mt-4">
+                  <div className={cn("h-1.5 w-12 rounded-full transition-all", baselineSubStep === 'roles' ? "bg-emerald-600" : "bg-emerald-200")} />
+                  <div className={cn("h-1.5 w-12 rounded-full transition-all", baselineSubStep === 'skills' ? "bg-emerald-600" : "bg-emerald-200")} />
+                </div>
               </div>
 
-              <div className="glass-card rounded-3xl p-10 space-y-10 shadow-xl shadow-zinc-200/50">
-                <div className="space-y-6">
-                  <h3 className="text-xl font-bold text-zinc-900">What is your current role?</h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {[
-                      'General Virtual Assistant',
-                      'Customer Support Representative',
-                      'Administrative Assistant',
-                      'Medical Receptionist',
-                      'Dental Front Office',
-                      'Other Professional'
-                    ].map((role) => (
+              <div className="glass-card rounded-3xl p-10 space-y-12 shadow-xl shadow-zinc-200/50">
+                <AnimatePresence mode="wait">
+                  {baselineSubStep === 'roles' ? (
+                    <motion.div 
+                      key="roles-substep"
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 20 }}
+                      className="space-y-8"
+                    >
+                      <div className="flex justify-between items-end">
+                        <h3 className="text-xl font-bold text-zinc-900">Select your previous roles</h3>
+                        <span className="text-xs text-zinc-400 font-medium">{state.baselineRoles.length} selected</span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {BASELINE_ROLES.map((role) => {
+                          const isSelected = state.baselineRoles.some(r => r.role === role);
+                          return (
+                            <div key={role} className="space-y-2">
+                              <button 
+                                onClick={() => {
+                                  setState(prev => {
+                                    const exists = prev.baselineRoles.some(r => r.role === role);
+                                    if (exists) {
+                                      return { ...prev, baselineRoles: prev.baselineRoles.filter(r => r.role !== role) };
+                                    } else {
+                                      return { ...prev, baselineRoles: [...prev.baselineRoles, { role, experience: EXPERIENCE_LEVELS[0] }] };
+                                    }
+                                  });
+                                }}
+                                className={cn(
+                                  "w-full p-4 rounded-xl border text-left transition-all flex justify-between items-center",
+                                  isSelected 
+                                    ? "border-emerald-600 bg-emerald-50 text-emerald-700 font-bold" 
+                                    : "border-zinc-200 hover:border-zinc-400 text-zinc-600"
+                                )}
+                              >
+                                <span className="text-sm">{role}</span>
+                                {isSelected && <CheckCircle2 className="w-4 h-4" />}
+                              </button>
+                              
+                              {isSelected && (
+                                <div className="px-2 pb-2">
+                                  <p className="text-[10px] uppercase font-bold text-zinc-400 mb-2 tracking-widest">Experience Level</p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {EXPERIENCE_LEVELS.map(exp => (
+                                      <button
+                                        key={exp}
+                                        onClick={() => {
+                                          setState(prev => ({
+                                            ...prev,
+                                            baselineRoles: prev.baselineRoles.map(r => r.role === role ? { ...r, experience: exp } : r)
+                                          }));
+                                        }}
+                                        className={cn(
+                                          "px-2 py-1 rounded-md text-[10px] font-bold border transition-all",
+                                          state.baselineRoles.find(r => r.role === role)?.experience === exp
+                                            ? "bg-emerald-600 border-emerald-600 text-white"
+                                            : "bg-white border-zinc-200 text-zinc-500 hover:border-zinc-400"
+                                        )}
+                                      >
+                                        {exp}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      
                       <button 
-                        key={role}
-                        onClick={() => setState(prev => ({ ...prev, baselineRole: role }))}
-                        className={cn(
-                          "p-4 rounded-xl border text-left transition-all",
-                          state.baselineRole === role 
-                            ? "border-emerald-600 bg-emerald-50 text-emerald-700 font-bold" 
-                            : "border-zinc-200 hover:border-zinc-400 text-zinc-600"
-                        )}
+                        disabled={state.baselineRoles.length === 0}
+                        onClick={() => setBaselineSubStep('skills')}
+                        className="w-full py-5 bg-zinc-900 text-white rounded-2xl font-bold text-lg hover:bg-zinc-800 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                       >
-                        {role}
+                        Next: Identify Skills <ArrowRight className="w-5 h-5" />
                       </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-6">
-                  <h3 className="text-xl font-bold text-zinc-900">Total professional experience?</h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                    {[
-                      '0-1 Year',
-                      '1-3 Years',
-                      '3-5 Years',
-                      '5+ Years'
-                    ].map((exp) => (
-                      <button 
-                        key={exp}
-                        onClick={() => setState(prev => ({ ...prev, experienceLevel: exp }))}
-                        className={cn(
-                          "p-4 rounded-xl border text-center transition-all",
-                          state.experienceLevel === exp 
-                            ? "border-emerald-600 bg-emerald-50 text-emerald-700 font-bold" 
-                            : "border-zinc-200 hover:border-zinc-400 text-zinc-600"
-                        )}
-                      >
-                        {exp}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <button 
-                  disabled={!state.baselineRole || !state.experienceLevel}
-                  onClick={() => handleBaselineSubmit(state.baselineRole!, state.experienceLevel!)}
-                  className="w-full py-5 bg-zinc-900 text-white rounded-2xl font-bold text-lg hover:bg-zinc-800 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                >
-                  Proceed to Diagnostic <ArrowRight className="w-5 h-5" />
-                </button>
+                    </motion.div>
+                  ) : (
+                    <motion.div 
+                      key="skills-substep"
+                      initial={{ opacity: 0, x: 20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -20 }}
+                      className="space-y-8"
+                    >
+                      <div className="flex justify-between items-end">
+                        <h3 className="text-xl font-bold text-zinc-900">Core Skills & Competencies</h3>
+                        <span className="text-xs text-zinc-400 font-medium">{state.baselineSkills.length} selected</span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {BASELINE_SKILLS.map((skill) => {
+                          const isSelected = state.baselineSkills.some(s => s.skill === skill);
+                          return (
+                            <div key={skill} className="space-y-2">
+                              <button 
+                                onClick={() => {
+                                  setState(prev => {
+                                    const exists = prev.baselineSkills.some(s => s.skill === skill);
+                                    if (exists) {
+                                      return { ...prev, baselineSkills: prev.baselineSkills.filter(s => s.skill !== skill) };
+                                    } else {
+                                      return { ...prev, baselineSkills: [...prev.baselineSkills, { skill, experience: EXPERIENCE_LEVELS[0] }] };
+                                    }
+                                  });
+                                }}
+                                className={cn(
+                                  "w-full p-4 rounded-xl border text-left transition-all flex justify-between items-center",
+                                  isSelected 
+                                    ? "border-indigo-600 bg-indigo-50 text-indigo-700 font-bold" 
+                                    : "border-zinc-200 hover:border-zinc-400 text-zinc-600"
+                                )}
+                              >
+                                <span className="text-sm">{skill}</span>
+                                {isSelected && <CheckCircle2 className="w-4 h-4" />}
+                              </button>
+                              
+                              {isSelected && (
+                                <div className="px-2 pb-2">
+                                  <p className="text-[10px] uppercase font-bold text-zinc-400 mb-2 tracking-widest">Proficiency</p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {EXPERIENCE_LEVELS.map(exp => (
+                                      <button
+                                        key={exp}
+                                        onClick={() => {
+                                          setState(prev => ({
+                                            ...prev,
+                                            baselineSkills: prev.baselineSkills.map(s => s.skill === skill ? { ...s, experience: exp } : s)
+                                          }));
+                                        }}
+                                        className={cn(
+                                          "px-2 py-1 rounded-md text-[10px] font-bold border transition-all",
+                                          state.baselineSkills.find(s => s.skill === skill)?.experience === exp
+                                            ? "bg-indigo-600 border-indigo-600 text-white"
+                                            : "bg-white border-zinc-200 text-zinc-500 hover:border-zinc-400"
+                                        )}
+                                      >
+                                        {exp}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      
+                      <div className="flex gap-4">
+                        <button 
+                          onClick={() => setBaselineSubStep('roles')}
+                          className="flex-1 py-5 bg-zinc-100 text-zinc-600 rounded-2xl font-bold text-lg hover:bg-zinc-200 transition-all"
+                        >
+                          Back to Roles
+                        </button>
+                        <button 
+                          disabled={state.baselineSkills.length === 0}
+                          onClick={handleBaselineSubmit}
+                          className="flex-[2] py-5 bg-zinc-900 text-white rounded-2xl font-bold text-lg hover:bg-zinc-800 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                        >
+                          Proceed to Diagnostic <ArrowRight className="w-5 h-5" />
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             </motion.div>
           )}
@@ -535,140 +885,177 @@ export default function App() {
             </motion.div>
           )}
 
-          {state.currentStep === 'assignment' && state.assignedTrack && (
+          {state.currentStep === 'assignment' && (
             <motion.div 
               key="assignment"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
-              className="max-w-4xl mx-auto space-y-12"
+              className="max-w-5xl mx-auto space-y-12"
             >
               <div className="text-center space-y-6">
                 <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold uppercase tracking-widest">
-                  <TrendingUp className="w-4 h-4" /> Right-Skilling Match Found
+                  <TrendingUp className="w-4 h-4" /> Diagnostic Complete
                 </div>
-                <h2 className="text-5xl font-bold tracking-tight">Your Career Pathway</h2>
-                <p className="text-zinc-500 text-xl max-w-2xl mx-auto">
-                  Based on your unique profile, we've mapped you to the <span className="text-zinc-900 font-bold">{state.assignedTrack.pathway}</span> pathway.
+                <h2 className="text-5xl font-bold tracking-tight text-zinc-900">Choose Your Upskill Pathway</h2>
+                <p className="text-zinc-500 text-xl max-w-2xl mx-auto leading-relaxed">
+                  Based on your diagnostic results and professional baseline, we've identified two potential paths for your growth.
                 </p>
               </div>
 
-              <div className="grid md:grid-cols-3 gap-8">
-                <div className="md:col-span-2 space-y-8">
-                  <div className="p-8 glass-card rounded-3xl border-2 border-emerald-500/20 shadow-xl shadow-emerald-500/5">
-                    <div className="flex items-center gap-4 mb-6">
-                      <div className="w-16 h-16 bg-emerald-600 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-200">
-                        <Activity className="text-white w-8 h-8" />
+              <div className="grid md:grid-cols-2 gap-8">
+                {/* Option 1: Right-Skilling (Recommended) */}
+                {(() => {
+                  const recommendedTrack = TRACKS.find(t => t.id === state.recommendedTrackId) || TRACKS[0];
+                  const highestCat = Object.entries(state.assessmentResults || {}).reduce((a, b) => a[1] > b[1] ? a : b, ['N/A', 0])[0];
+                  
+                  return (
+                    <motion.div 
+                      whileHover={{ y: -5 }}
+                      className="p-8 glass-card rounded-3xl border-2 border-emerald-500/30 bg-emerald-50/30 flex flex-col h-full relative overflow-hidden"
+                    >
+                      <div className="absolute top-0 right-0 p-4">
+                        <div className="bg-emerald-600 text-white text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-widest shadow-lg">
+                          Recommended Path
+                        </div>
+                      </div>
+                      
+                      <div className="space-y-6 flex-grow">
+                        <div className="w-14 h-14 bg-emerald-600 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-200">
+                          <Zap className="text-white w-7 h-7" />
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <h3 className="text-3xl font-bold text-zinc-900">Right-Skill: {recommendedTrack.name}</h3>
+                          <p className="text-zinc-600 leading-relaxed">
+                            This path leverages your high aptitude in <span className="font-bold text-emerald-700">{highestCat.replace('-', ' ')}</span>. It's designed to transition you into a role where your natural strengths will shine.
+                          </p>
+                        </div>
+
+                        <div className="space-y-4">
+                          <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-400">Key Skills You'll Master</h4>
+                          <div className="flex flex-wrap gap-2">
+                            {recommendedTrack.skills.slice(0, 4).map(s => (
+                              <span key={s.name} className="px-3 py-1 bg-white border border-emerald-100 rounded-full text-xs font-medium text-emerald-700">
+                                {s.name}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button 
+                        onClick={() => {
+                          const newState = { ...state, assignedTrack: recommendedTrack, currentStep: 'upskilling' as ProgramStep };
+                          setState(newState);
+                          saveState(newState);
+                        }}
+                        className="mt-10 w-full py-5 bg-emerald-600 text-white rounded-2xl font-bold text-lg hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 flex items-center justify-center gap-2"
+                      >
+                        Start Right-Skilling <ArrowRight className="w-5 h-5" />
+                      </button>
+                    </motion.div>
+                  );
+                })()}
+
+                {/* Option 2: Up-Skilling (Baseline Based) */}
+                {(() => {
+                  // Find a track that matches their baseline roles, or default to first role
+                  const baselineRoleName = state.baselineRoles[0]?.role || 'Medical Receptionist';
+                  const upskillTrack = TRACKS.find(t => t.name === baselineRoleName) || TRACKS[0];
+                  
+                  return (
+                    <motion.div 
+                      whileHover={{ y: -5 }}
+                      className="p-8 glass-card rounded-3xl border border-zinc-200 flex flex-col h-full"
+                    >
+                      <div className="space-y-6 flex-grow">
+                        <div className="w-14 h-14 bg-zinc-900 rounded-2xl flex items-center justify-center shadow-lg">
+                          <TrendingUp className="text-white w-7 h-7" />
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <h3 className="text-3xl font-bold text-zinc-900">Up-Skill: {upskillTrack.name}</h3>
+                          <p className="text-zinc-600 leading-relaxed">
+                            Double down on your existing experience as a <span className="font-bold text-zinc-900">{baselineRoleName}</span>. This path focuses on mastering advanced modules and closing specific skill gaps identified in your diagnostic.
+                          </p>
+                        </div>
+
+                        <div className="space-y-4">
+                          <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-400">Advanced Mastery Areas</h4>
+                          <div className="flex flex-wrap gap-2">
+                            {upskillTrack.curriculum.map(m => (
+                              <span key={m.id} className="px-3 py-1 bg-zinc-100 border border-zinc-200 rounded-full text-xs font-medium text-zinc-600">
+                                {m.title}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button 
+                        onClick={() => {
+                          const newState = { ...state, assignedTrack: upskillTrack, currentStep: 'upskilling' as ProgramStep };
+                          setState(newState);
+                          saveState(newState);
+                        }}
+                        className="mt-10 w-full py-5 bg-zinc-900 text-white rounded-2xl font-bold text-lg hover:bg-zinc-800 transition-all flex items-center justify-center gap-2"
+                      >
+                        Start Up-Skilling <ArrowRight className="w-5 h-5" />
+                      </button>
+                    </motion.div>
+                  );
+                })()}
+              </div>
+
+              {/* Detailed Results Breakdown */}
+              <div className="p-10 glass-card rounded-3xl border border-zinc-200">
+                <h3 className="text-2xl font-bold mb-8">Diagnostic Profile</h3>
+                <div className="grid md:grid-cols-2 gap-12">
+                  <div className="space-y-6">
+                    {Object.entries(state.assessmentResults || {}).map(([key, val]) => (
+                      <div key={key} className="space-y-2">
+                        <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
+                          <span className="text-zinc-500">{key.replace('-', ' ')}</span>
+                          <span className="text-zinc-900">{val}%</span>
+                        </div>
+                        <div className="h-2 bg-zinc-100 rounded-full overflow-hidden">
+                          <motion.div 
+                            initial={{ width: 0 }}
+                            animate={{ width: `${val}%` }}
+                            className={cn(
+                              "h-full rounded-full",
+                              val >= 70 ? "bg-emerald-500" : val >= 40 ? "bg-amber-500" : "bg-rose-500"
+                            )}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="bg-zinc-50 rounded-2xl p-6 space-y-4">
+                    <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-400">Baseline Summary</h4>
+                    <div className="space-y-4">
+                      <div>
+                        <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest mb-1">Roles & Experience</p>
+                        <div className="flex flex-wrap gap-2">
+                          {state.baselineRoles.map(r => (
+                            <span key={r.role} className="px-2 py-1 bg-white border border-zinc-200 rounded text-[10px] font-bold">
+                              {r.role} ({r.experience})
+                            </span>
+                          ))}
+                        </div>
                       </div>
                       <div>
-                        <h3 className="text-3xl font-bold">{state.assignedTrack.name}</h3>
-                        <p className="text-zinc-500">{state.assignedTrack.description}</p>
-                      </div>
-                    </div>
-
-                    {/* Competency Insights */}
-                    <div className="grid grid-cols-2 gap-4 mb-8">
-                      <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
-                        <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-1">Highest Competency</div>
-                        <div className="text-lg font-bold text-zinc-900">
-                          {Object.entries(state.assessmentResults || {}).reduce((a, b) => a[1] > b[1] ? a : b)[0].replace('-', ' ')}
-                        </div>
-                      </div>
-                      <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
-                        <div className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-1">Growth Opportunity</div>
-                        <div className="text-lg font-bold text-zinc-900">
-                          {Object.entries(state.assessmentResults || {}).reduce((a, b) => a[1] < b[1] ? a : b)[0].replace('-', ' ')}
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div className="space-y-4">
-                      <h4 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Core Skills to Master</h4>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {state.assignedTrack.skills.map((skill, i) => (
-                          <button 
-                            key={i} 
-                            onClick={() => setSelectedSkill(skill)}
-                            className="flex items-center justify-between p-4 bg-zinc-50 rounded-2xl border border-zinc-100 hover:border-emerald-500 hover:bg-white transition-all group"
-                          >
-                            <span className="font-bold text-zinc-700">{skill.name}</span>
-                            <Info className="w-4 h-4 text-zinc-300 group-hover:text-emerald-500" />
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="p-8 glass-card rounded-3xl bg-zinc-900 text-white">
-                    <h4 className="text-emerald-400 text-xs font-bold uppercase tracking-widest mb-4">Pathway Selection Logic</h4>
-                    <p className="text-lg leading-relaxed text-zinc-300 italic mb-6">
-                      "We've assigned you to the <span className="text-white font-bold">{state.assignedTrack.name}</span> track because you demonstrated exceptional aptitude in <span className="text-emerald-400 font-bold">{Object.entries(state.assessmentResults || {}).reduce((a, b) => a[1] > b[1] ? a : b)[0].replace('-', ' ')}</span> ({Object.entries(state.assessmentResults || {}).reduce((a, b) => a[1] > b[1] ? a : b)[1]}%). This role leverages your natural strengths while providing a structured path to master your growth area: <span className="text-amber-400 font-bold">{Object.entries(state.assessmentResults || {}).reduce((a, b) => a[1] < b[1] ? a : b)[0].replace('-', ' ')}</span>."
-                    </p>
-                    <div className="pt-6 border-t border-white/10 space-y-4">
-                      <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-500">Skill Gap Analysis</h4>
-                      <div className="space-y-3">
-                        {['Advanced EHR Workflow', 'Specialized Medical Terminology', 'Complex Insurance Appeals'].map((gap, i) => (
-                          <div key={i} className="flex items-center gap-3 text-sm text-zinc-400">
-                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                            {gap}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-6">
-                  <div className="p-6 bg-white rounded-3xl border border-zinc-200 shadow-sm space-y-4">
-                    <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-400">User Baseline</h4>
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 bg-zinc-100 rounded-lg flex items-center justify-center">
-                          <User className="w-4 h-4 text-zinc-500" />
-                        </div>
-                        <div>
-                          <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest leading-none">Current Role</p>
-                          <p className="text-sm font-bold text-zinc-900">{state.baselineRole}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 bg-zinc-100 rounded-lg flex items-center justify-center">
-                          <Briefcase className="w-4 h-4 text-zinc-500" />
-                        </div>
-                        <div>
-                          <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest leading-none">Experience</p>
-                          <p className="text-sm font-bold text-zinc-900">{state.experienceLevel}</p>
+                        <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest mb-1">Top Skills</p>
+                        <div className="flex flex-wrap gap-2">
+                          {state.baselineSkills.map(s => (
+                            <span key={s.skill} className="px-2 py-1 bg-white border border-zinc-200 rounded text-[10px] font-bold">
+                              {s.skill}
+                            </span>
+                          ))}
                         </div>
                       </div>
                     </div>
                   </div>
-
-                  <div className="p-6 bg-white rounded-3xl border border-zinc-200 shadow-sm">
-                    <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-400 mb-6">Assessment Profile</h4>
-                    <div className="space-y-6">
-                      {Object.entries(state.assessmentResults || {}).map(([key, val]) => (
-                        <div key={key} className="space-y-2">
-                          <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider">
-                            <span className="text-zinc-500">{key.replace('-', ' ')}</span>
-                            <span className="text-zinc-900">{val}%</span>
-                          </div>
-                          <div className="h-1.5 bg-zinc-100 rounded-full overflow-hidden">
-                            <motion.div 
-                              initial={{ width: 0 }}
-                              animate={{ width: `${val}%` }}
-                              className="h-full bg-emerald-500"
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  
-                  <button 
-                    onClick={nextStep}
-                    className="w-full bg-emerald-600 text-white py-6 rounded-3xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 flex items-center justify-center gap-2"
-                  >
-                    Enter Up-Skilling Phase <ArrowRight className="w-5 h-5" />
-                  </button>
                 </div>
               </div>
             </motion.div>
@@ -1001,8 +1388,8 @@ export default function App() {
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="text-2xl font-bold text-zinc-900">$15.00/hr</div>
-                        <div className="text-xs text-zinc-400">Target Specialist Rate</div>
+                        <div className="text-2xl font-bold text-zinc-900">{getTieredRate(state.averageScore)}</div>
+                        <div className="text-xs text-zinc-400">Tiered Specialist Rate</div>
                       </div>
                     </div>
                     
@@ -1051,7 +1438,10 @@ export default function App() {
                           <p className="text-xs text-zinc-500">{job.role}</p>
                         </div>
                         <div className="pt-4 border-t border-zinc-100 flex justify-between items-center">
-                          <span className="text-sm font-bold text-zinc-700">{job.rate}</span>
+                          <div className="flex flex-col">
+                            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Tiered Rate</span>
+                            <span className="text-sm font-bold text-zinc-700">{job.rate}</span>
+                          </div>
                           <button className="text-xs font-bold text-emerald-600 hover:underline">Apply Now</button>
                         </div>
                       </div>
@@ -1211,8 +1601,225 @@ export default function App() {
               </div>
             </motion.div>
           )}
+          {state.currentStep === 'profile' && (
+            <motion.div 
+              key="profile"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-12"
+            >
+              <div className="flex justify-between items-end">
+                <div className="space-y-4">
+                  <h2 className="text-4xl font-bold tracking-tight text-zinc-900">VA Professional Profile</h2>
+                  <p className="text-zinc-500 text-lg">Track your career progression and skill mastery.</p>
+                </div>
+                {getTier(state.averageScore) && (
+                  <div className={cn("px-6 py-3 rounded-2xl border-2 flex flex-col items-center", getTier(state.averageScore)?.color, getTier(state.averageScore)?.border)}>
+                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] opacity-60">Proficiency</span>
+                    <span className="text-xl font-black uppercase tracking-tighter">{getTier(state.averageScore)?.name}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid md:grid-cols-3 gap-8">
+                <div className="md:col-span-2 space-y-8">
+                  <div className="glass-card rounded-[2.5rem] p-10 space-y-8">
+                    <div className="flex justify-between items-center">
+                      <h3 className="text-2xl font-bold">Skill Assessments</h3>
+                      <BarChart3 className="w-6 h-6 text-zinc-300" />
+                    </div>
+                    <div className="grid sm:grid-cols-2 gap-6">
+                      {Object.entries(state.assessmentResults || {}).map(([key, val]) => {
+                        const score = val as number;
+                        return (
+                          <div key={key} className="p-6 bg-zinc-50 rounded-3xl border border-zinc-100 space-y-4">
+                            <div className="flex justify-between items-center">
+                              <span className="text-xs font-bold uppercase tracking-widest text-zinc-400">{key.replace('-', ' ')}</span>
+                              <span className={cn("text-lg font-bold", score >= 80 ? "text-emerald-600" : score >= 60 ? "text-indigo-600" : "text-zinc-600")}>{score}%</span>
+                            </div>
+                            <div className="h-2 bg-zinc-200 rounded-full overflow-hidden">
+                              <motion.div 
+                                initial={{ width: 0 }}
+                                animate={{ width: `${score}%` }}
+                                className={cn("h-full", score >= 80 ? "bg-emerald-500" : score >= 60 ? "bg-indigo-500" : "bg-zinc-400")}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {!state.assessmentResults && (
+                        <div className="sm:col-span-2 p-12 text-center border-2 border-dashed border-zinc-200 rounded-3xl">
+                          <ClipboardCheck className="w-12 h-12 text-zinc-200 mx-auto mb-4" />
+                          <p className="text-zinc-400 font-medium">No assessment data found. Complete the diagnostic to see your results.</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="glass-card rounded-[2.5rem] p-10 space-y-8">
+                    <div className="flex justify-between items-center">
+                      <h3 className="text-2xl font-bold">Completed Modules</h3>
+                      <BookOpen className="w-6 h-6 text-zinc-300" />
+                    </div>
+                    <div className="space-y-4">
+                      {state.assignedTrack?.curriculum.map(module => {
+                        const isCompleted = state.completedModules.includes(module.id);
+                        return (
+                          <div key={module.id} className={cn("p-6 rounded-3xl border transition-all", isCompleted ? "bg-emerald-50 border-emerald-100" : "bg-zinc-50 border-zinc-100")}>
+                            <div className="flex justify-between items-center">
+                              <div className="flex items-center gap-4">
+                                <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center", isCompleted ? "bg-emerald-500 text-white" : "bg-zinc-200 text-zinc-400")}>
+                                  {isCompleted ? <CheckCircle2 className="w-6 h-6" /> : <BookOpen className="w-5 h-5" />}
+                                </div>
+                                <div>
+                                  <h4 className="font-bold text-zinc-900">{module.title}</h4>
+                                  <p className="text-xs text-zinc-500">{module.duration} • {module.topics.length} Topics</p>
+                                </div>
+                              </div>
+                              {isCompleted && <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 bg-white px-3 py-1 rounded-full shadow-sm">Completed</span>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {!state.assignedTrack && (
+                        <div className="p-12 text-center border-2 border-dashed border-zinc-200 rounded-3xl">
+                          <Map className="w-12 h-12 text-zinc-200 mx-auto mb-4" />
+                          <p className="text-zinc-400 font-medium">Select a career track to see your curriculum.</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-8">
+                  <div className="glass-card rounded-[2.5rem] p-8 space-y-6">
+                    <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-400">Account Status</h4>
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-4 p-4 bg-zinc-50 rounded-2xl border border-zinc-100">
+                        <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-sm">
+                          <User className="w-5 h-5 text-zinc-400" />
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest leading-none">Logged in as</p>
+                          <p className="text-sm font-bold text-zinc-900">{user?.email || 'Guest'}</p>
+                        </div>
+                      </div>
+                      <button className="w-full py-4 bg-zinc-900 text-white rounded-2xl font-bold text-sm hover:bg-zinc-800 transition-all">
+                        Edit Profile
+                      </button>
+                      <button 
+                        onClick={handleLogout}
+                        className="w-full py-4 bg-white text-red-600 border border-red-100 rounded-2xl font-bold text-sm hover:bg-red-50 transition-all"
+                      >
+                        Logout
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="glass-card rounded-[2.5rem] p-8 space-y-6 bg-indigo-600 text-white">
+                    <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center">
+                      <Zap className="w-6 h-6 text-white" />
+                    </div>
+                    <div className="space-y-2">
+                      <h4 className="text-xl font-bold">Next Milestone</h4>
+                      <p className="text-indigo-100 text-sm leading-relaxed">Complete 2 more modules to unlock the "Senior Specialist" certification and increase your tiered rate.</p>
+                    </div>
+                    <div className="pt-4">
+                      <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest mb-2">
+                        <span>Progress</span>
+                        <span>65%</span>
+                      </div>
+                      <div className="h-2 bg-white/20 rounded-full overflow-hidden">
+                        <div className="h-full bg-white w-[65%]" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
         </AnimatePresence>
       </main>
+
+      <AnimatePresence>
+        {showLoginModal && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-zinc-900/60 backdrop-blur-sm"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="bg-white rounded-[2.5rem] p-10 max-w-md w-full shadow-2xl space-y-8"
+            >
+              <div className="flex justify-between items-start">
+                <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center">
+                  <User className="w-6 h-6" />
+                </div>
+                <button onClick={() => setShowLoginModal(false)} className="p-2 hover:bg-zinc-100 rounded-full transition-colors">
+                  <X className="w-5 h-5 text-zinc-400" />
+                </button>
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-3xl font-bold">Welcome Back</h3>
+                <p className="text-zinc-500">Log in to your VA profile to continue your upskilling journey.</p>
+              </div>
+              <div className="space-y-4">
+                <button 
+                  onClick={handleGoogleLogin}
+                  className="w-full py-5 bg-white border border-zinc-200 text-zinc-900 rounded-2xl font-bold text-lg hover:bg-zinc-50 transition-all shadow-sm flex items-center justify-center gap-3"
+                >
+                  <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-6 h-6" alt="Google" />
+                  Continue with Google
+                </button>
+                <div className="relative py-4">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-zinc-100"></div>
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-white px-2 text-zinc-400 font-bold tracking-widest">Or email</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-widest text-zinc-400 ml-1">Email Address</label>
+                  <input 
+                    type="email" 
+                    placeholder="name@example.com"
+                    className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-2xl focus:outline-none focus:border-emerald-500 transition-all"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-widest text-zinc-400 ml-1">Password</label>
+                  <input 
+                    type="password" 
+                    placeholder="••••••••"
+                    className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-2xl focus:outline-none focus:border-emerald-500 transition-all"
+                  />
+                </div>
+                <button 
+                  onClick={() => {
+                    setIsLoggedIn(true);
+                    setShowLoginModal(false);
+                    setState(prev => ({ ...prev, currentStep: 'profile' }));
+                  }}
+                  className="w-full py-5 bg-zinc-900 text-white rounded-2xl font-bold text-lg hover:bg-zinc-800 transition-all shadow-lg shadow-zinc-200"
+                >
+                  Log In
+                </button>
+                <div className="text-center">
+                  <button className="text-sm font-bold text-emerald-600 hover:underline">Forgot password?</button>
+                </div>
+              </div>
+              <div className="pt-6 border-t border-zinc-100 text-center">
+                <p className="text-sm text-zinc-500">Don't have an account? <button className="text-emerald-600 font-bold hover:underline">Sign up</button></p>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {selectedSkill && (

@@ -1,5 +1,5 @@
 export type VAStatus = 'unplaced' | 'placed';
-export type ProgramStep = 'entry' | 'baseline' | 'assessment' | 'assignment' | 'upskilling' | 'application' | 'vetting' | 'certification' | 'placement' | 'kpi';
+export type ProgramStep = 'entry' | 'baseline' | 'assessment' | 'assignment' | 'upskilling' | 'application' | 'vetting' | 'certification' | 'placement' | 'kpi' | 'profile';
 
 export interface Skill { name: string; description: string; }
 export interface Module { id: string; title: string; duration: string; topics: string[]; }
@@ -17,14 +17,104 @@ export interface Track {
 export interface UserState {
   status: VAStatus | null;
   currentStep: ProgramStep;
-  baselineRole: string | null;
-  experienceLevel: string | null;
+  baselineRoles: { role: string; experience: string }[];
+  baselineSkills: { skill: string; experience: string }[];
+  baselineRole: string | null; // Keep for backward compatibility/simplicity if needed
+  experienceLevel: string | null; // Keep for backward compatibility
   assessmentResults: Record<string, number> | null;
   averageScore: number | null;
   assignedTrack: Track | null;
+  recommendedTrackId: string | null;
   completedModules: string[];
   completedTopics: string[];
 }
+
+export const BASELINE_ROLES = [
+  'Medical Receptionist',
+  'Medical Biller',
+  'Medical Administrative Assistant',
+  'Medical Coder',
+  'Medical Scribe',
+  'Health Educator',
+  'Dental Biller',
+  'Dental Receptionist',
+  'General Virtual Assistant',
+  'Other Professional'
+];
+
+export const BASELINE_SKILLS = [
+  // Medical Receptionist
+  'Patient Intake/Registration',
+  'Appointment Scheduling',
+  'Call Handling',
+  'Insurance Verification',
+  'Medical Records Management',
+  'Payment Collection',
+  'Referral Management',
+  'Follow-up Calls',
+  // Medical Biller
+  'Claims Processing',
+  'Claims Submission',
+  'Denial Management',
+  'Payment Posting',
+  'Billing Inquiries',
+  'Account Management',
+  'Revenue Cycle Management',
+  // Medical Admin Assistant
+  'Front Office Coordination',
+  'Billing Support',
+  'Patient Correspondence',
+  'Prior Authorization',
+  'EA Support',
+  // Medical Coder
+  'Clinical Documentation Review',
+  'ICD/CPT Coding',
+  'Coding Accuracy Compliance',
+  'Billing Collaboration',
+  'Specialty & HCC Coding',
+  'Provider CDI Training',
+  'Code Update Monitoring',
+  // Medical Scribe
+  'Live Scribing',
+  'Patient History Entry',
+  'Transcribing',
+  'Assessment & Plan Recording',
+  'Order Entry Assistance',
+  'EHR Template Management',
+  'Clinical Alert Monitoring',
+  'Pre/Post Charting',
+  'Workflow Support',
+  // Health Educator
+  'Patient Education Support',
+  'Educational Content Creation',
+  'Follow-Up Communication',
+  'Call/Message Handling',
+  'Administrative Assistance',
+  'Scheduling & Coordination',
+  'Data Entry & Documentation',
+  'Clinical Content Research & Validation',
+  'Program Evaluation & Reporting',
+  'Health Screening Tool Administration',
+  // Dental Biller
+  'Code Entry (CDT)',
+  'Claim Tracking',
+  'Patient Billing',
+  'Record Keeping',
+  'Code Updates',
+  // Dental Receptionist
+  'Front Desk (Virtual)',
+  'Payment Processing',
+  'Manage Treatment Estimates',
+  'Record Management',
+  'Team Coordination'
+];
+
+export const EXPERIENCE_LEVELS = [
+  '< 1 Year',
+  '1-2 Years',
+  '3-5 Years',
+  '5+ Years'
+];
 
 export const ASSESSMENT_QUESTIONS = [
   // Dental Billing Codes
@@ -93,12 +183,17 @@ export const TRACKS: Track[] = [
     id: 'medical-receptionist',
     name: 'Medical Receptionist',
     pathway: 'Administrative',
-    description: 'Front desk operations and patient flow management.',
-    assignmentCriteria: 'High scores in Customer Service and Coordination.',
+    description: 'First point of contact managing front desk operations, patient flow, and office efficiency.',
+    assignmentCriteria: 'High scores in Call Handling, Scheduling, and Patient Intake.',
     skills: [
-      { name: 'Patient Intake', description: 'Managing patient arrival and demographic verification.' },
-      { name: 'Appointment Scheduling', description: 'Coordinating calendars across time zones.' },
-      { name: 'Insurance Verification', description: 'Confirming coverage and benefits with carriers.' }
+      { name: 'Patient Intake/Registration', description: 'Collect personal, medical, and insurance information accurately.' },
+      { name: 'Appointment Scheduling', description: 'Coordinate appointments based on provider availability.' },
+      { name: 'Call Handling', description: 'Manage incoming inquiries and direct calls professionally.' },
+      { name: 'Insurance Verification', description: 'Confirm patient eligibility and coverage details.' },
+      { name: 'Medical Records Management', description: 'Maintain patient health records in compliance with HIPAA.' },
+      { name: 'Payment Collection', description: 'Collect co-pays and deductibles at time of service.' },
+      { name: 'Referral Management', description: 'Process incoming and outgoing referrals with specialty offices.' },
+      { name: 'Follow-up Calls', description: 'Contact patients post-visit for instructions or progress checks.' }
     ],
     curriculum: [
       { id: 'mr-1', title: 'Front-Desk Excellence', duration: '10h', topics: ['Greeting Protocols', 'Privacy (HIPAA)', 'De-escalation', 'Phone Etiquette', 'Patient Registration', 'Demographic Entry', 'Consent Forms', 'Waitlist Management', 'Check-in/Check-out', 'Co-pay Collection'] },
@@ -109,12 +204,17 @@ export const TRACKS: Track[] = [
     id: 'medical-biller',
     name: 'Medical Biller',
     pathway: 'Revenue Cycle',
-    description: 'Claims processing and reimbursement management.',
-    assignmentCriteria: 'High scores in Financial Aptitude and Detail.',
+    description: 'Processing claims, managing denials, and ensuring timely reimbursement for healthcare facilities.',
+    assignmentCriteria: 'High scores in Claims Processing, Denial Management, and RCM.',
     skills: [
-      { name: 'Claims Processing', description: 'Translating services into insurance claims.' },
-      { name: 'Denial Management', description: 'Analyzing and resubmitting rejected claims.' },
-      { name: 'RCM', description: 'Overseeing the end-to-end financial process.' }
+      { name: 'Claims Processing', description: 'Review and prepare medical claims for coding accuracy.' },
+      { name: 'Claims Submission', description: 'Submit claims electronically or by paper per payer guidelines.' },
+      { name: 'Denial Management', description: 'Investigate rejected claims and identify root causes.' },
+      { name: 'Payment Posting', description: 'Enter insurance and patient payments into billing systems.' },
+      { name: 'Insurance Verification', description: 'Confirm eligibility and authorization before services.' },
+      { name: 'Billing Inquiries', description: 'Respond to patient and payer questions regarding charges.' },
+      { name: 'Account Management', description: 'Maintain accurate patient billing records and collections.' },
+      { name: 'Revenue Cycle Management', description: 'Oversee the full financial process from intake to final payment.' }
     ],
     curriculum: [
       { id: 'mb-1', title: 'RCM Ecosystem', duration: '15h', topics: ['Claim Lifecycle', 'Clearinghouses', 'ERA/EOB Analysis', 'Payer Rules', 'Credentialing Basics', 'Fee Schedules', 'Patient Statements', 'Aging Reports', 'Write-off Policies', 'Audit Trails'] },
@@ -122,15 +222,41 @@ export const TRACKS: Track[] = [
     ]
   },
   {
+    id: 'medical-admin-assistant',
+    name: 'Medical Administrative Assistant',
+    pathway: 'Administrative',
+    description: 'A versatile hybrid role blending front-desk, secretarial, and coordination duties.',
+    assignmentCriteria: 'Balanced scores in Coordination, Records Management, and EA Support.',
+    skills: [
+      { name: 'Appointment Scheduling', description: 'Manage provider calendars and patient bookings.' },
+      { name: 'Insurance Verification', description: 'Confirm eligibility and benefits prior to appointments.' },
+      { name: 'Records Management', description: 'Organize patient medical records per HIPAA standards.' },
+      { name: 'Front Office Coordination', description: 'Coordinate communication between patients and providers.' },
+      { name: 'Billing Support', description: 'Assist with co-pays, invoices, and claim documentation.' },
+      { name: 'Patient Correspondence', description: 'Handle referrals, reminders, and lab order communications.' },
+      { name: 'Prior Authorization', description: 'Prepare and submit authorization requests to payers.' },
+      { name: 'EA Support', description: 'Manage executive calendars, meetings, and project coordination.' }
+    ],
+    curriculum: [
+      { id: 'maa-1', title: 'The Hybrid VA', duration: '15h', topics: ['Multitasking', 'Cross-dept Sync', 'Conflict Resolution', 'Medical Secretary Duties', 'Transcription Basics', 'Insurance Coordination', 'Patient Advocacy', 'Office Supply Management', 'Staff Scheduling', 'Facility Compliance'] },
+      { id: 'maa-2', title: 'Advanced Admin Ops', duration: '12h', topics: ['Budgeting', 'Vendor Management', 'Credentialing Support', 'Meeting Minutes', 'Legal Documentation', 'Policy Drafting', 'Quality Assurance', 'Internal Audits', 'HR Support', 'Onboarding VAs'] }
+    ]
+  },
+  {
     id: 'medical-coder',
     name: 'Medical Coder',
     pathway: 'Revenue Cycle',
-    description: 'Standardized coding for diagnoses and procedures.',
-    assignmentCriteria: 'Expert level Detail and strong Clinical Foundations.',
+    description: 'Reviewing clinical documentation and assigning standardized codes for billing and compliance.',
+    assignmentCriteria: 'Expertise in ICD/CPT Coding and Clinical Documentation Review.',
     skills: [
-      { name: 'ICD-10 Coding', description: 'Assigning codes to patient diagnoses.' },
-      { name: 'CPT/HCPCS Coding', description: 'Coding for procedures and equipment.' },
-      { name: 'Documentation Review', description: 'Ensuring coding accuracy from physician notes.' }
+      { name: 'Clinical Documentation Review', description: 'Analyze provider notes and diagnostic findings for coding.' },
+      { name: 'ICD/CPT Coding', description: 'Translate services into standardized medical codes.' },
+      { name: 'Coding Accuracy Compliance', description: 'Verify correct code usage based on payer guidelines.' },
+      { name: 'Billing Collaboration', description: 'Work with billing staff to ensure proper claim creation.' },
+      { name: 'Denial Management', description: 'Investigate and resubmit coding-related denials.' },
+      { name: 'Specialty & HCC Coding', description: 'Apply coding for complex areas like surgery or risk adjustment.' },
+      { name: 'Provider CDI Training', description: 'Train clinicians on documentation best practices.' },
+      { name: 'Code Update Monitoring', description: 'Monitor annual updates to ICD-10-CM and CPT guidelines.' }
     ],
     curriculum: [
       { id: 'mc-1', title: 'Advanced ICD-10', duration: '25h', topics: ['General Guidelines', 'Infectious Diseases', 'Neoplasms', 'Endocrine Systems', 'Mental Disorders', 'Nervous Systems', 'Circulatory Systems', 'Respiratory Systems', 'Digestive Systems', 'Skin & Subcutaneous'] },
@@ -141,12 +267,18 @@ export const TRACKS: Track[] = [
     id: 'medical-scribe',
     name: 'Medical Scribe',
     pathway: 'Clinical',
-    description: 'Real-time notes entry into EHR.',
-    assignmentCriteria: 'High scores in Clinical Knowledge and Typing Speed.',
+    description: 'Documentation specialist entering real-time notes into the EHR to improve clinical efficiency.',
+    assignmentCriteria: 'High scores in Live Scribing and Assessment & Plan Recording.',
     skills: [
-      { name: 'Live Scribing', description: 'Documenting encounters in real-time.' },
-      { name: 'EHR Templates', description: 'Building efficient charting templates.' },
-      { name: 'Transcription', description: 'Converting voice to formal reports.' }
+      { name: 'Live Scribing', description: 'Provide real-time documentation during patient encounters.' },
+      { name: 'Patient History Entry', description: 'Enter chief complaints, HPI, and medical history.' },
+      { name: 'Transcribing', description: 'Convert recorded dictations into formal medical documentation.' },
+      { name: 'Assessment & Plan Recording', description: 'Record diagnoses, treatment plans, and follow-up instructions.' },
+      { name: 'Order Entry Assistance', description: 'Input orders for labs and imaging under provider supervision.' },
+      { name: 'EHR Template Management', description: 'Maintain and customize chart templates for providers.' },
+      { name: 'Clinical Alert Monitoring', description: 'Watch for flags like medication interactions in the EHR.' },
+      { name: 'Pre/Post Charting', description: 'Prepare records before visits and organize notes after.' },
+      { name: 'Workflow Support', description: 'Maintain pace during high-volume clinic days.' }
     ],
     curriculum: [
       { id: 'ms-1', title: 'Charting Excellence', duration: '40h', topics: ['HPI Construction', 'Physical Exam Findings', 'Assessment & Plan', 'Medical Terminology', 'Anatomy & Physiology', 'Pharmacology Basics', 'Lab Interpretation', 'Imaging Results', 'Clinical Decision Making', 'Surgical Notes'] },
@@ -154,29 +286,22 @@ export const TRACKS: Track[] = [
     ]
   },
   {
-    id: 'medical-admin-assistant',
-    name: 'Medical Admin Assistant',
-    pathway: 'Administrative',
-    description: 'Hybrid role blending front-desk and documentation.',
-    assignmentCriteria: 'Balanced scores across Admin, Clinical, and Billing.',
-    skills: [
-      { name: 'Prior Authorization', description: 'Securing approval from payers for services.' },
-      { name: 'Records Management', description: 'Organizing complex medical documentation.' }
-    ],
-    curriculum: [
-      { id: 'maa-1', title: 'The Hybrid VA', duration: '15h', topics: ['Multitasking', 'Cross-dept Sync', 'Conflict Resolution', 'Medical Secretary Duties', 'Transcription Basics', 'Insurance Coordination', 'Patient Advocacy', 'Office Supply Management', 'Staff Scheduling', 'Facility Compliance'] },
-      { id: 'maa-2', title: 'Advanced Admin Ops', duration: '12h', topics: ['Budgeting', 'Vendor Management', 'Credentialing Support', 'Meeting Minutes', 'Legal Documentation', 'Policy Drafting', 'Quality Assurance', 'Internal Audits', 'HR Support', 'Onboarding VAs'] }
-    ]
-  },
-  {
     id: 'health-educator',
     name: 'Health Educator',
     pathway: 'Clinical',
-    description: 'Remote patient education and coordination.',
-    assignmentCriteria: 'Strong Clinical background and Communication skills.',
+    description: 'Remote patient education, administrative coordination, and communication support.',
+    assignmentCriteria: 'Strong scores in Patient Education and Content Creation.',
     skills: [
-      { name: 'Patient Education', description: 'Guiding patients through lifestyle adjustments.' },
-      { name: 'Content Creation', description: 'Developing educational health materials.' }
+      { name: 'Patient Education Support', description: 'Guide patients through lifestyle and treatment instructions.' },
+      { name: 'Educational Content Creation', description: 'Develop brochures, infographics, and health modules.' },
+      { name: 'Follow-Up Communication', description: 'Conduct check-ins to reinforce adherence and gather insights.' },
+      { name: 'Call/Message Handling', description: 'Manage inquiries and triage messages for providers.' },
+      { name: 'Administrative Assistance', description: 'Support email, calendar, and record updates.' },
+      { name: 'Scheduling & Coordination', description: 'Arrange webinars and one-on-one education sessions.' },
+      { name: 'Data Entry & Documentation', description: 'Enter education records and session notes into EMRs.' },
+      { name: 'Clinical Content Research & Validation', description: 'Review health info against trusted clinical sources.' },
+      { name: 'Program Evaluation & Reporting', description: 'Track outcomes and patient satisfaction for reporting.' },
+      { name: 'Health Screening Tool Administration', description: 'Administer standardized questionnaires remotely.' }
     ],
     curriculum: [
       { id: 'he-1', title: 'Patient Advocacy', duration: '12h', topics: ['Empathy', 'Health Literacy', 'Chronic Disease Management', 'Preventive Care', 'Nutrition Basics', 'Exercise Guidance', 'Mental Health Support', 'Community Resources', 'Support Groups', 'Patient Portals'] }
@@ -186,11 +311,19 @@ export const TRACKS: Track[] = [
     id: 'dental-biller',
     name: 'Dental Biller',
     pathway: 'Revenue Cycle',
-    description: 'Managing financial aspects of dental care.',
-    assignmentCriteria: 'Financial aptitude with interest in specialized Dental CDT coding.',
+    description: 'Managing financial and insurance aspects of dental care using CDT coding.',
+    assignmentCriteria: 'High scores in CDT Coding and Dental Record Keeping.',
     skills: [
-      { name: 'CDT Coding', description: 'Specialized dental procedure coding.' },
-      { name: 'Claim Tracking', description: 'Monitoring dental insurance submissions.' }
+      { name: 'Insurance Verification', description: 'Confirm dental eligibility and plan limitations.' },
+      { name: 'Code Entry (CDT)', description: 'Assign CDT codes based on documented dental procedures.' },
+      { name: 'Claim Submission', description: 'Prepare and send dental claims for reimbursement.' },
+      { name: 'Claim Tracking', description: 'Monitor outstanding claims and follow up on delays.' },
+      { name: 'Denial Management', description: 'Investigate rejected dental claims and file appeals.' },
+      { name: 'Payment Posting', description: 'Apply insurance payments and reconcile dental EOBs.' },
+      { name: 'Patient Billing', description: 'Generate statements and collect uncovered dental balances.' },
+      { name: 'Billing Inquiries', description: 'Answer patient questions regarding dental charges.' },
+      { name: 'Record Keeping', description: 'Ensure accurate transaction documentation in dental software.' },
+      { name: 'Code Updates', description: 'Keep current with annual CDT code updates.' }
     ],
     curriculum: [
       { id: 'db-1', title: 'Dental RCM', duration: '15h', topics: ['CDT Basics', 'Dental Payers', 'Pre-determinations', 'Radiograph Attachment', 'Narrative Writing', 'Dental Terminology', 'Tooth Numbering Systems', 'Surface Coding', 'Ortho Billing', 'Periodontal Charting'] }
@@ -200,11 +333,16 @@ export const TRACKS: Track[] = [
     id: 'dental-receptionist',
     name: 'Dental Receptionist',
     pathway: 'Administrative',
-    description: 'Front-line representative for dental offices.',
-    assignmentCriteria: 'High Customer Service scores with Dental terminology interest.',
+    description: 'Front-line representative managing dental office operations and patient coordination.',
+    assignmentCriteria: 'High scores in Dental Front Desk and Treatment Estimates.',
     skills: [
-      { name: 'Treatment Estimates', description: 'Calculating out-of-pocket costs for dental plans.' },
-      { name: 'Team Coordination', description: 'Syncing between hygienists and dentists.' }
+      { name: 'Front Desk (Virtual)', description: 'Handle dental scheduling, intake, and patient reminders.' },
+      { name: 'Insurance Verification', description: 'Confirm dental eligibility and pre-authorization needs.' },
+      { name: 'Payment Processing', description: 'Collect dental co-pays and process transactions.' },
+      { name: 'Manage Treatment Estimates', description: 'Generate and explain dental treatment cost estimates.' },
+      { name: 'Record Management', description: 'Maintain accurate patient data in dental practice systems.' },
+      { name: 'Team Coordination', description: 'Communicate patient needs to hygienists and dentists.' },
+      { name: 'Patient Follow-up', description: 'Call patients for recall visits or post-op check-ins.' }
     ],
     curriculum: [
       { id: 'dr-1', title: 'Dental Front-Office', duration: '12h', topics: ['Dental Terminology', 'Recall Systems', 'Treatment Presentation', 'Financial Arrangements', 'Dental Insurance Basics', 'Hygiene Scheduling', 'Lab Tracking', 'Patient Communication', 'Dental Software Mastery', 'Emergency Triage'] }
