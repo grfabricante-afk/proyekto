@@ -41,10 +41,11 @@ import {
   X,
   Zap,
   TrendingUp,
-  Map
+  Map,
+  Compass
 } from 'lucide-react';
 import { cn } from './lib/utils';
-import { VAStatus, ProgramStep, UserState, TRACKS, Track, Skill, ASSESSMENT_QUESTIONS, BASELINE_ROLES, BASELINE_SKILLS, EXPERIENCE_LEVELS } from './types';
+import { VAStatus, ProgramStep, PathwayType, UserState, TRACKS, Track, Skill, ASSESSMENT_QUESTIONS, BASELINE_ROLES, BASELINE_SKILLS, EXPERIENCE_LEVELS } from './types';
 
 const SkillModal = ({ skill, onClose }: { skill: Skill; onClose: () => void }) => (
   <motion.div 
@@ -145,6 +146,8 @@ function AppContent() {
     baselineRole: null,
     experienceLevel: null,
     assessmentResults: null,
+    assessmentFeedback: null,
+    selectedPathway: null,
     averageScore: null,
     assignedTrack: null,
     recommendedTrackId: null,
@@ -312,7 +315,7 @@ function AppContent() {
 
     const newState = { 
       ...state, 
-      currentStep: 'assessment' as ProgramStep,
+      currentStep: 'pathway-selection' as ProgramStep,
       assignedTrack: track
     };
     setState(newState);
@@ -353,33 +356,67 @@ function AppContent() {
       }
     });
 
-    // Convert to percentages
+    // Convert to percentages and generate feedback
     const finalResults: Record<string, number> = {};
+    const finalFeedback: Record<string, string> = {};
     let totalScore = 0;
     const categories = Object.keys(results);
+    
     categories.forEach(cat => {
-      finalResults[cat] = Math.round((results[cat] / categoryTotals[cat]) * 100);
-      totalScore += finalResults[cat];
+      const score = Math.round((results[cat] / categoryTotals[cat]) * 100);
+      finalResults[cat] = score;
+      totalScore += score;
+
+      // Realistic feedback based on score ranges
+      if (score >= 90) {
+        finalFeedback[cat] = "Expert: You have a deep understanding of this domain. You're ready for advanced specialization.";
+      } else if (score >= 70) {
+        finalFeedback[cat] = "Proficient: You have a solid foundation. Focus on mastering complex edge cases and advanced workflows.";
+      } else if (score >= 40) {
+        finalFeedback[cat] = "Developing: You understand the basics but have significant gaps. Targeted training will help you reach professional standards.";
+      } else {
+        finalFeedback[cat] = "Beginner: This is a new area for you. We'll start with the fundamentals to build your confidence and skills.";
+      }
     });
 
     const averageScore = Math.round(totalScore / categories.length);
 
     // 10x Right-skilling logic: Identify the best aptitude match
+    // We prioritize categories where the user scored highest
     const categoryMap: Record<string, string[]> = {
-      'dental-billing': ['dental-biller'],
-      'ehr-navigation': ['medical-scribe', 'medical-admin-assistant'],
-      'hipaa-compliance': ['medical-receptionist', 'dental-receptionist'],
-      'patient-communication': ['health-educator', 'medical-receptionist'],
-      'medical-terminology': ['medical-coder', 'medical-scribe'],
+      'dental-billing': ['dental-biller', 'dental-receptionist'],
+      'ehr-navigation': ['medical-scribe', 'medical-admin-assistant', 'medical-receptionist'],
+      'hipaa-compliance': ['medical-coder', 'medical-admin-assistant', 'medical-receptionist', 'dental-receptionist'],
+      'patient-communication': ['health-educator', 'medical-receptionist', 'dental-receptionist'],
+      'medical-terminology': ['medical-coder', 'medical-scribe', 'medical-biller'],
     };
 
-    const highestCategory = Object.entries(finalResults).reduce((a, b) => a[1] > b[1] ? a : b)[0];
+    const sortedCategories = Object.entries(finalResults).sort((a, b) => b[1] - a[1]);
+    const highestCategory = sortedCategories[0][0];
+    
+    // Logic to pick a track:
+    // 1. If they have a baseline role, see if it's in the possible tracks for their highest category
+    // 2. Otherwise, pick the most "advanced" track for that category
     const possibleTracks = categoryMap[highestCategory] || ['medical-receptionist'];
-    const recommendedId = possibleTracks[Math.floor(Math.random() * possibleTracks.length)];
+    
+    let recommendedId = possibleTracks[0]; // Default to first
+    
+    // Try to match with baseline roles if possible (Right-skilling)
+    const baselineRoleNames = state.baselineRoles.map(r => r.role.toLowerCase().replace(/\s+/g, '-'));
+    const matchingTrack = possibleTracks.find(tId => baselineRoleNames.includes(tId));
+    
+    if (matchingTrack) {
+      recommendedId = matchingTrack;
+    } else {
+      // If no direct match, pick the most specialized one (e.g., coder over receptionist)
+      const priority = ['medical-coder', 'medical-biller', 'medical-scribe', 'dental-biller', 'health-educator', 'medical-admin-assistant', 'medical-receptionist', 'dental-receptionist'];
+      recommendedId = possibleTracks.sort((a, b) => priority.indexOf(a) - priority.indexOf(b))[0];
+    }
 
     const newState = { 
       ...state, 
       assessmentResults: finalResults, 
+      assessmentFeedback: finalFeedback,
       averageScore,
       currentStep: 'assignment' as ProgramStep,
       recommendedTrackId: recommendedId
@@ -427,6 +464,8 @@ function AppContent() {
       baselineRole: null,
       experienceLevel: null,
       assessmentResults: null,
+      assessmentFeedback: null,
+      selectedPathway: null,
       averageScore: null,
       assignedTrack: null,
       recommendedTrackId: null,
@@ -800,6 +839,73 @@ function AppContent() {
             </motion.div>
           )}
 
+          {state.currentStep === 'pathway-selection' && (
+            <motion.div 
+              key="pathway-selection"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="max-w-4xl mx-auto space-y-12"
+            >
+              <div className="text-center space-y-6">
+                <div className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-full text-xs font-bold uppercase tracking-widest">
+                  <Compass className="w-4 h-4" /> Choose Your Journey
+                </div>
+                <h2 className="text-5xl font-bold tracking-tight text-zinc-900">How would you like to grow?</h2>
+                <p className="text-zinc-500 text-xl max-w-2xl mx-auto leading-relaxed">
+                  Select a pathway to tailor your diagnostic assessment and learning experience.
+                </p>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-8">
+                <motion.button
+                  whileHover={{ y: -5 }}
+                  onClick={() => {
+                    const newState = { ...state, selectedPathway: 'upskill' as PathwayType, currentStep: 'assessment' as ProgramStep };
+                    setState(newState);
+                    saveState(newState);
+                  }}
+                  className="p-10 glass-card rounded-3xl border border-zinc-200 text-left space-y-6 hover:border-indigo-500 transition-all group"
+                >
+                  <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+                    <TrendingUp className="text-white w-8 h-8" />
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-3xl font-bold text-zinc-900">Up-Skilling</h3>
+                    <p className="text-zinc-500 leading-relaxed">
+                      Master your current role. We'll identify specific gaps in your baseline skills and provide advanced training to make you an expert in your field.
+                    </p>
+                  </div>
+                  <div className="pt-4 flex items-center gap-2 text-indigo-600 font-bold">
+                    Choose Up-Skilling <ArrowRight className="w-4 h-4" />
+                  </div>
+                </motion.button>
+
+                <motion.button
+                  whileHover={{ y: -5 }}
+                  onClick={() => {
+                    const newState = { ...state, selectedPathway: 'right-skill' as PathwayType, currentStep: 'assessment' as ProgramStep };
+                    setState(newState);
+                    saveState(newState);
+                  }}
+                  className="p-10 glass-card rounded-3xl border border-zinc-200 text-left space-y-6 hover:border-emerald-500 transition-all group"
+                >
+                  <div className="w-16 h-16 bg-emerald-600 rounded-2xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+                    <Zap className="text-white w-8 h-8" />
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-3xl font-bold text-zinc-900">Right-Skilling</h3>
+                    <p className="text-zinc-500 leading-relaxed">
+                      Pivot to your best fit. We'll assess your natural aptitudes across multiple domains to find the role where you'll be most successful.
+                    </p>
+                  </div>
+                  <div className="pt-4 flex items-center gap-2 text-emerald-600 font-bold">
+                    Choose Right-Skilling <ArrowRight className="w-4 h-4" />
+                  </div>
+                </motion.button>
+              </div>
+            </motion.div>
+          )}
+
           {state.currentStep === 'assessment' && (
             <motion.div 
               key="assessment"
@@ -896,111 +1002,127 @@ function AppContent() {
                 <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold uppercase tracking-widest">
                   <TrendingUp className="w-4 h-4" /> Diagnostic Complete
                 </div>
-                <h2 className="text-5xl font-bold tracking-tight text-zinc-900">Choose Your Upskill Pathway</h2>
+                <h2 className="text-5xl font-bold tracking-tight text-zinc-900">
+                  {state.selectedPathway === 'right-skill' ? 'Your Right-Skilling Match' : 'Your Up-Skilling Roadmap'}
+                </h2>
                 <p className="text-zinc-500 text-xl max-w-2xl mx-auto leading-relaxed">
-                  Based on your diagnostic results and professional baseline, we've identified two potential paths for your growth.
+                  {state.selectedPathway === 'right-skill' 
+                    ? "Based on your diagnostic results, we've identified a high-aptitude role that perfectly matches your natural strengths."
+                    : "We've analyzed your current skills and identified the key areas to master to reach expert level in your current role."}
                 </p>
               </div>
 
               <div className="grid md:grid-cols-2 gap-8">
-                {/* Option 1: Right-Skilling (Recommended) */}
+                {/* Primary Path (Based on Selection) */}
                 {(() => {
+                  const isRightSkill = state.selectedPathway === 'right-skill';
                   const recommendedTrack = TRACKS.find(t => t.id === state.recommendedTrackId) || TRACKS[0];
+                  const baselineRoleName = state.baselineRoles[0]?.role || 'Medical Receptionist';
+                  const upskillTrack = TRACKS.find(t => t.name === baselineRoleName) || TRACKS[0];
+                  
+                  const primaryTrack = isRightSkill ? recommendedTrack : upskillTrack;
                   const highestCat = Object.entries(state.assessmentResults || {}).reduce((a, b) => a[1] > b[1] ? a : b, ['N/A', 0])[0];
                   
                   return (
                     <motion.div 
-                      whileHover={{ y: -5 }}
-                      className="p-8 glass-card rounded-3xl border-2 border-emerald-500/30 bg-emerald-50/30 flex flex-col h-full relative overflow-hidden"
+                      initial={{ scale: 0.95 }}
+                      animate={{ scale: 1 }}
+                      className="p-8 glass-card rounded-3xl border-2 border-emerald-500 bg-emerald-50/30 flex flex-col h-full relative overflow-hidden md:col-span-2 lg:col-span-1 lg:mx-auto lg:max-w-xl"
                     >
                       <div className="absolute top-0 right-0 p-4">
                         <div className="bg-emerald-600 text-white text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-widest shadow-lg">
-                          Recommended Path
+                          Your Selected Path
                         </div>
                       </div>
                       
                       <div className="space-y-6 flex-grow">
                         <div className="w-14 h-14 bg-emerald-600 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-200">
-                          <Zap className="text-white w-7 h-7" />
+                          {isRightSkill ? <Zap className="text-white w-7 h-7" /> : <TrendingUp className="text-white w-7 h-7" />}
                         </div>
                         
                         <div className="space-y-2">
-                          <h3 className="text-3xl font-bold text-zinc-900">Right-Skill: {recommendedTrack.name}</h3>
+                          <h3 className="text-3xl font-bold text-zinc-900">
+                            {isRightSkill ? 'Right-Skill' : 'Up-Skill'}: {primaryTrack.name}
+                          </h3>
                           <p className="text-zinc-600 leading-relaxed">
-                            This path leverages your high aptitude in <span className="font-bold text-emerald-700">{highestCat.replace('-', ' ')}</span>. It's designed to transition you into a role where your natural strengths will shine.
+                            {isRightSkill 
+                              ? `This path leverages your high aptitude in ${highestCat.replace('-', ' ')}. It's designed to transition you into a role where your natural strengths will shine.`
+                              : `Double down on your existing experience as a ${baselineRoleName}. This path focuses on mastering advanced modules and closing specific skill gaps identified in your diagnostic.`}
                           </p>
                         </div>
 
                         <div className="space-y-4">
-                          <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-400">Key Skills You'll Master</h4>
+                          <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-400">
+                            {isRightSkill ? "Key Skills You'll Master" : "Advanced Mastery Areas"}
+                          </h4>
                           <div className="flex flex-wrap gap-2">
-                            {recommendedTrack.skills.slice(0, 4).map(s => (
-                              <span key={s.name} className="px-3 py-1 bg-white border border-emerald-100 rounded-full text-xs font-medium text-emerald-700">
-                                {s.name}
-                              </span>
-                            ))}
+                            {isRightSkill 
+                              ? primaryTrack.skills.slice(0, 4).map(s => (
+                                  <span key={s.name} className="px-3 py-1 bg-white border border-emerald-100 rounded-full text-xs font-medium text-emerald-700">
+                                    {s.name}
+                                  </span>
+                                ))
+                              : primaryTrack.curriculum.map(m => (
+                                  <span key={m.id} className="px-3 py-1 bg-white border border-emerald-100 rounded-full text-xs font-medium text-emerald-700">
+                                    {m.title}
+                                  </span>
+                                ))
+                            }
                           </div>
                         </div>
                       </div>
 
                       <button 
                         onClick={() => {
-                          const newState = { ...state, assignedTrack: recommendedTrack, currentStep: 'upskilling' as ProgramStep };
+                          const newState = { ...state, assignedTrack: primaryTrack, currentStep: 'upskilling' as ProgramStep };
                           setState(newState);
                           saveState(newState);
                         }}
                         className="mt-10 w-full py-5 bg-emerald-600 text-white rounded-2xl font-bold text-lg hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 flex items-center justify-center gap-2"
                       >
-                        Start Right-Skilling <ArrowRight className="w-5 h-5" />
+                        Confirm & Start Journey <ArrowRight className="w-5 h-5" />
                       </button>
                     </motion.div>
                   );
                 })()}
 
-                {/* Option 2: Up-Skilling (Baseline Based) */}
+                {/* Secondary Path (Alternative) */}
                 {(() => {
-                  // Find a track that matches their baseline roles, or default to first role
+                  const isRightSkill = state.selectedPathway === 'right-skill';
+                  const recommendedTrack = TRACKS.find(t => t.id === state.recommendedTrackId) || TRACKS[0];
                   const baselineRoleName = state.baselineRoles[0]?.role || 'Medical Receptionist';
                   const upskillTrack = TRACKS.find(t => t.name === baselineRoleName) || TRACKS[0];
                   
+                  const secondaryTrack = isRightSkill ? upskillTrack : recommendedTrack;
+                  
                   return (
                     <motion.div 
-                      whileHover={{ y: -5 }}
-                      className="p-8 glass-card rounded-3xl border border-zinc-200 flex flex-col h-full"
+                      className="p-8 glass-card rounded-3xl border border-zinc-200 flex flex-col h-full opacity-60 hover:opacity-100 transition-opacity"
                     >
                       <div className="space-y-6 flex-grow">
-                        <div className="w-14 h-14 bg-zinc-900 rounded-2xl flex items-center justify-center shadow-lg">
-                          <TrendingUp className="text-white w-7 h-7" />
+                        <div className="w-12 h-12 bg-zinc-200 rounded-xl flex items-center justify-center">
+                          {!isRightSkill ? <Zap className="text-zinc-500 w-6 h-6" /> : <TrendingUp className="text-zinc-500 w-6 h-6" />}
                         </div>
                         
                         <div className="space-y-2">
-                          <h3 className="text-3xl font-bold text-zinc-900">Up-Skill: {upskillTrack.name}</h3>
-                          <p className="text-zinc-600 leading-relaxed">
-                            Double down on your existing experience as a <span className="font-bold text-zinc-900">{baselineRoleName}</span>. This path focuses on mastering advanced modules and closing specific skill gaps identified in your diagnostic.
+                          <h3 className="text-2xl font-bold text-zinc-900">
+                            Alternative: {!isRightSkill ? 'Right-Skill' : 'Up-Skill'}
+                          </h3>
+                          <p className="text-sm text-zinc-500 leading-relaxed">
+                            Changed your mind? You can still choose the other pathway. This will focus on {!isRightSkill ? 'finding your best aptitude match' : 'mastering your current role'}.
                           </p>
-                        </div>
-
-                        <div className="space-y-4">
-                          <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-400">Advanced Mastery Areas</h4>
-                          <div className="flex flex-wrap gap-2">
-                            {upskillTrack.curriculum.map(m => (
-                              <span key={m.id} className="px-3 py-1 bg-zinc-100 border border-zinc-200 rounded-full text-xs font-medium text-zinc-600">
-                                {m.title}
-                              </span>
-                            ))}
-                          </div>
                         </div>
                       </div>
 
                       <button 
                         onClick={() => {
-                          const newState = { ...state, assignedTrack: upskillTrack, currentStep: 'upskilling' as ProgramStep };
+                          const newState = { ...state, assignedTrack: secondaryTrack, currentStep: 'upskilling' as ProgramStep };
                           setState(newState);
                           saveState(newState);
                         }}
-                        className="mt-10 w-full py-5 bg-zinc-900 text-white rounded-2xl font-bold text-lg hover:bg-zinc-800 transition-all flex items-center justify-center gap-2"
+                        className="mt-8 w-full py-4 bg-white border border-zinc-200 text-zinc-600 rounded-2xl font-bold text-sm hover:bg-zinc-50 transition-all flex items-center justify-center gap-2"
                       >
-                        Start Up-Skilling <ArrowRight className="w-5 h-5" />
+                        Switch to {!isRightSkill ? 'Right-Skilling' : 'Up-Skilling'}
                       </button>
                     </motion.div>
                   );
@@ -1028,6 +1150,9 @@ function AppContent() {
                             )}
                           />
                         </div>
+                        <p className="text-[10px] text-zinc-500 italic leading-tight">
+                          {state.assessmentFeedback?.[key]}
+                        </p>
                       </div>
                     ))}
                   </div>

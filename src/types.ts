@@ -1,5 +1,7 @@
 export type VAStatus = 'unplaced' | 'placed';
-export type ProgramStep = 'entry' | 'baseline' | 'assessment' | 'assignment' | 'upskilling' | 'application' | 'vetting' | 'certification' | 'placement' | 'kpi' | 'profile';
+export type ProgramStep = 'entry' | 'baseline' | 'pathway-selection' | 'assessment' | 'assignment' | 'upskilling' | 'application' | 'vetting' | 'certification' | 'placement' | 'kpi' | 'profile';
+
+export type PathwayType = 'upskill' | 'right-skill';
 
 export interface Skill { name: string; description: string; }
 export interface Module { id: string; title: string; duration: string; topics: string[]; }
@@ -22,6 +24,8 @@ export interface UserState {
   baselineRole: string | null; // Keep for backward compatibility/simplicity if needed
   experienceLevel: string | null; // Keep for backward compatibility
   assessmentResults: Record<string, number> | null;
+  assessmentFeedback: Record<string, string> | null;
+  selectedPathway: PathwayType | null;
   averageScore: number | null;
   assignedTrack: Track | null;
   recommendedTrackId: string | null;
