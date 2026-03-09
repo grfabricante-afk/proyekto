@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from 'react';
+import React, { useState, useEffect, useMemo, Component, ErrorInfo, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   signInWithPopup, 
@@ -42,10 +42,58 @@ import {
   Zap,
   TrendingUp,
   Map,
-  Compass
+  Compass,
+  Clock,
+  Star
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { VAStatus, ProgramStep, PathwayType, UserState, TRACKS, Track, Skill, ASSESSMENT_QUESTIONS, BASELINE_ROLES, BASELINE_SKILLS, EXPERIENCE_LEVELS } from './types';
+
+const FeedbackModal = ({ feedback, onClose }: { feedback: { type: 'module' | 'curriculum', title: string }, onClose: () => void }) => (
+  <motion.div 
+    initial={{ opacity: 0 }}
+    animate={{ opacity: 1 }}
+    exit={{ opacity: 0 }}
+    className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-zinc-900/60 backdrop-blur-sm"
+    onClick={onClose}
+  >
+    <motion.div 
+      initial={{ scale: 0.9, y: 20 }}
+      animate={{ scale: 1, y: 0 }}
+      className="bg-white rounded-[2.5rem] p-10 max-w-lg w-full shadow-2xl text-center space-y-8"
+      onClick={e => e.stopPropagation()}
+    >
+      <div className="relative">
+        <div className="w-24 h-24 bg-emerald-100 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto animate-bounce">
+          {feedback.type === 'curriculum' ? <Award className="w-12 h-12" /> : <Zap className="w-12 h-12" />}
+        </div>
+        <div className="absolute -top-2 -right-2 w-8 h-8 bg-amber-400 rounded-full flex items-center justify-center text-white shadow-lg animate-pulse">
+          <Star className="w-4 h-4 fill-current" />
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <h3 className="text-3xl font-black tracking-tight text-zinc-900">
+          {feedback.type === 'curriculum' ? 'Curriculum Mastered!' : 'Module Complete!'}
+        </h3>
+        <p className="text-zinc-500 text-lg leading-relaxed">
+          {feedback.type === 'curriculum' 
+            ? `Incredible work! You've successfully completed the entire ${feedback.title} curriculum. You're now ready for the Simulation Phase.`
+            : `Great job! You've mastered the "${feedback.title}" module. Keep this momentum going!`}
+        </p>
+      </div>
+
+      <div className="grid gap-4">
+        <button 
+          onClick={onClose}
+          className="w-full py-5 bg-zinc-900 text-white rounded-2xl font-bold text-lg hover:bg-zinc-800 transition-all shadow-xl shadow-zinc-200"
+        >
+          {feedback.type === 'curriculum' ? 'Proceed to Simulation' : 'Continue Learning'}
+        </button>
+      </div>
+    </motion.div>
+  </motion.div>
+);
 
 const SkillModal = ({ skill, onClose }: { skill: Skill; onClose: () => void }) => (
   <motion.div 
@@ -151,13 +199,16 @@ function AppContent() {
     averageScore: null,
     assignedTrack: null,
     recommendedTrackId: null,
+    selectedUpskillRoleId: null,
     completedModules: [],
     completedTopics: [],
+    assignedAt: null,
   });
 
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
+  const [showFeedback, setShowFeedback] = useState<{ type: 'module' | 'curriculum', title: string } | null>(null);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [baselineSubStep, setBaselineSubStep] = useState<'roles' | 'skills'>('roles');
@@ -264,6 +315,13 @@ function AppContent() {
     }
   };
 
+  const getDueDate = (assignedAt: string | null, daysToComplete: number) => {
+    if (!assignedAt) return 'N/A';
+    const date = new Date(assignedAt);
+    date.setDate(date.getDate() + daysToComplete);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
   const steps: { id: ProgramStep; label: string; icon: any }[] = [
     { id: 'entry', label: 'Discovery', icon: Search },
     { id: 'baseline', label: 'Baseline', icon: User },
@@ -278,6 +336,25 @@ function AppContent() {
   ];
 
   const currentStepIndex = steps.findIndex(s => s.id === state.currentStep);
+
+  const roleToCategories: Record<string, string[]> = {
+    'medical-receptionist': ['patient-communication', 'hipaa-compliance', 'ehr-navigation', 'hybrid-skills'],
+    'medical-biller': ['medical-terminology', 'hipaa-compliance', 'ehr-navigation', 'insurance-follow-up', 'hybrid-skills'],
+    'medical-coder': ['medical-terminology', 'hipaa-compliance', 'ehr-navigation', 'hybrid-skills'],
+    'medical-scribe': ['medical-terminology', 'hipaa-compliance', 'ehr-navigation', 'hybrid-skills'],
+    'dental-biller': ['dental-billing', 'hipaa-compliance', 'ehr-navigation', 'hybrid-skills'],
+    'dental-receptionist': ['dental-billing', 'patient-communication', 'hipaa-compliance', 'hybrid-skills'],
+    'health-educator': ['patient-communication', 'medical-terminology', 'hipaa-compliance', 'hybrid-skills'],
+    'medical-admin-assistant': ['ehr-navigation', 'hipaa-compliance', 'patient-communication', 'hybrid-skills'],
+  };
+
+  const filteredQuestions = useMemo(() => {
+    if (state.selectedPathway === 'upskill' && state.selectedUpskillRoleId) {
+      const allowedCategories = roleToCategories[state.selectedUpskillRoleId] || [];
+      return ASSESSMENT_QUESTIONS.filter(q => allowedCategories.includes(q.category));
+    }
+    return ASSESSMENT_QUESTIONS;
+  }, [state.selectedPathway, state.selectedUpskillRoleId]);
 
   const getTier = (score: number | null) => {
     if (score === null) return null;
@@ -332,7 +409,7 @@ function AppContent() {
   };
 
   const nextQuestion = () => {
-    if (currentQuestionIdx < ASSESSMENT_QUESTIONS.length - 1) {
+    if (currentQuestionIdx < filteredQuestions.length - 1) {
       setCurrentQuestionIdx(prev => prev + 1);
       setShowInsight(false);
     } else {
@@ -345,7 +422,7 @@ function AppContent() {
     const results: Record<string, number> = {};
     const categoryTotals: Record<string, number> = {};
 
-    ASSESSMENT_QUESTIONS.forEach(q => {
+    filteredQuestions.forEach(q => {
       if (!results[q.category]) {
         results[q.category] = 0;
         categoryTotals[q.category] = 0;
@@ -381,37 +458,104 @@ function AppContent() {
 
     const averageScore = Math.round(totalScore / categories.length);
 
-    // 10x Right-skilling logic: Identify the best aptitude match
-    // We prioritize categories where the user scored highest
-    const categoryMap: Record<string, string[]> = {
-      'dental-billing': ['dental-biller', 'dental-receptionist'],
-      'ehr-navigation': ['medical-scribe', 'medical-admin-assistant', 'medical-receptionist'],
-      'hipaa-compliance': ['medical-coder', 'medical-admin-assistant', 'medical-receptionist', 'dental-receptionist'],
-      'patient-communication': ['health-educator', 'medical-receptionist', 'dental-receptionist'],
-      'medical-terminology': ['medical-coder', 'medical-scribe', 'medical-biller'],
+    // 10x Right-skilling logic: Identify the best career track recommendation
+    // We combine Aptitude (Assessment) with Experience (Baseline Roles/Skills)
+    const trackScores: Record<string, number> = {};
+    TRACKS.forEach(t => trackScores[t.id] = 0);
+
+    // 1. Aptitude Scoring (from Assessment)
+    // Map assessment categories to tracks with weights
+    const categoryToTrackWeights: Record<string, Record<string, number>> = {
+      'dental-billing': { 'dental-biller': 1.0, 'dental-receptionist': 0.6 },
+      'ehr-navigation': { 'medical-scribe': 1.0, 'medical-admin-assistant': 0.8, 'medical-receptionist': 0.6 },
+      'hipaa-compliance': { 'medical-coder': 0.8, 'medical-admin-assistant': 1.0, 'medical-receptionist': 0.9, 'dental-receptionist': 0.9 },
+      'patient-communication': { 'health-educator': 1.0, 'medical-receptionist': 0.9, 'dental-receptionist': 0.9 },
+      'medical-terminology': { 'medical-coder': 1.0, 'medical-scribe': 1.0, 'medical-biller': 0.8 },
+      'insurance-follow-up': { 'medical-biller': 1.0, 'dental-biller': 1.0 },
+      'hybrid-skills': { 
+        'medical-coder': 0.5, 
+        'medical-biller': 0.5, 
+        'medical-scribe': 0.5, 
+        'medical-admin-assistant': 0.5,
+        'health-educator': 0.5,
+        'medical-receptionist': 0.3,
+        'dental-biller': 0.3,
+        'dental-receptionist': 0.3
+      },
     };
 
-    const sortedCategories = Object.entries(finalResults).sort((a, b) => b[1] - a[1]);
-    const highestCategory = sortedCategories[0][0];
+    Object.entries(finalResults).forEach(([cat, score]) => {
+      const weights = categoryToTrackWeights[cat];
+      if (weights) {
+        Object.entries(weights).forEach(([trackId, weight]) => {
+          if (trackScores[trackId] !== undefined) {
+            trackScores[trackId] += (score * weight);
+          }
+        });
+      }
+    });
+
+    // 2. Experience Scoring (from Baseline Roles)
+    // We boost tracks that are natural evolutions of their previous roles
+    const roleToTrackBoost: Record<string, string[]> = {
+      'Medical Receptionist': ['medical-receptionist', 'medical-admin-assistant'],
+      'Medical Biller': ['medical-biller', 'medical-coder'],
+      'Medical Administrative Assistant': ['medical-admin-assistant', 'medical-receptionist'],
+      'Medical Coder': ['medical-coder', 'medical-biller'],
+      'Medical Scribe': ['medical-scribe', 'medical-coder'],
+      'Health Educator': ['health-educator'],
+      'Dental Biller': ['dental-biller'],
+      'Dental Receptionist': ['dental-receptionist'],
+    };
+
+    const expToYears: Record<string, number> = {
+      '< 1 Year': 0.5,
+      '1-2 Years': 1.5,
+      '3-5 Years': 4,
+      '5+ Years': 6
+    };
+
+    state.baselineRoles.forEach(roleObj => {
+      const tracks = roleToTrackBoost[roleObj.role];
+      if (tracks) {
+        tracks.forEach(tId => {
+          if (trackScores[tId] !== undefined) {
+            // Significant boost based on years of experience (max 5 years for scaling)
+            const years = expToYears[roleObj.experience] || 0.5;
+            const boost = Math.min(years, 5) * 25; 
+            trackScores[tId] += boost;
+          }
+        });
+      }
+    });
+
+    // 3. Skill Alignment Scoring
+    // Boost tracks that require their existing skills
+    state.baselineSkills.forEach(skillObj => {
+      TRACKS.forEach(track => {
+        if (track.skills.some(s => s.name === skillObj.skill)) {
+          // Proficiency boost: Expert (40), Intermediate (20), Beginner (10)
+          const proficiencyMap: Record<string, number> = { 'Beginner': 10, 'Intermediate': 20, 'Expert': 40 };
+          trackScores[track.id] += (proficiencyMap[skillObj.experience] || 10);
+        }
+      });
+    });
+
+    // 4. Tie-breaking / Specialization Priority
+    // If scores are close, we prioritize more specialized/advanced tracks
+    const priority = ['medical-coder', 'medical-biller', 'medical-scribe', 'dental-biller', 'health-educator', 'medical-admin-assistant', 'medical-receptionist', 'dental-receptionist'];
     
-    // Logic to pick a track:
-    // 1. If they have a baseline role, see if it's in the possible tracks for their highest category
-    // 2. Otherwise, pick the most "advanced" track for that category
-    const possibleTracks = categoryMap[highestCategory] || ['medical-receptionist'];
-    
-    let recommendedId = possibleTracks[0]; // Default to first
-    
-    // Try to match with baseline roles if possible (Right-skilling)
-    const baselineRoleNames = state.baselineRoles.map(r => r.role.toLowerCase().replace(/\s+/g, '-'));
-    const matchingTrack = possibleTracks.find(tId => baselineRoleNames.includes(tId));
-    
-    if (matchingTrack) {
-      recommendedId = matchingTrack;
-    } else {
-      // If no direct match, pick the most specialized one (e.g., coder over receptionist)
-      const priority = ['medical-coder', 'medical-biller', 'medical-scribe', 'dental-biller', 'health-educator', 'medical-admin-assistant', 'medical-receptionist', 'dental-receptionist'];
-      recommendedId = possibleTracks.sort((a, b) => priority.indexOf(a) - priority.indexOf(b))[0];
-    }
+    const sortedTracks = Object.entries(trackScores).sort((a, b) => {
+      if (Math.abs(b[1] - a[1]) > 5) {
+        return b[1] - a[1]; // Significant score difference wins
+      }
+      // If scores are nearly identical, use the priority list
+      return priority.indexOf(a[0]) - priority.indexOf(b[0]);
+    });
+
+    const recommendedId = state.selectedPathway === 'upskill' && state.selectedUpskillRoleId 
+      ? state.selectedUpskillRoleId 
+      : sortedTracks[0][0];
 
     const newState = { 
       ...state, 
@@ -436,9 +580,23 @@ function AppContent() {
       const module = prev.assignedTrack?.curriculum.find(m => m.id === moduleId);
       const allCompleted = module?.topics.every(t => newTopics.includes(t));
       
+      const wasAlreadyCompleted = prev.completedModules.includes(moduleId);
       const newModules = allCompleted 
         ? [...prev.completedModules.filter(id => id !== moduleId), moduleId]
         : prev.completedModules.filter(id => id !== moduleId);
+
+      // Trigger feedback if a new module is completed
+      if (allCompleted && !wasAlreadyCompleted) {
+        const isCurriculumCompleted = prev.assignedTrack?.curriculum.every(m => 
+          m.id === moduleId ? true : newModules.includes(m.id)
+        );
+        
+        if (isCurriculumCompleted) {
+          setShowFeedback({ type: 'curriculum', title: prev.assignedTrack?.name || 'Curriculum' });
+        } else {
+          setShowFeedback({ type: 'module', title: module?.title || 'Module' });
+        }
+      }
 
       const newState = { ...prev, completedTopics: newTopics, completedModules: newModules };
       saveState(newState);
@@ -469,8 +627,10 @@ function AppContent() {
       averageScore: null,
       assignedTrack: null,
       recommendedTrackId: null,
+      selectedUpskillRoleId: null,
       completedModules: [],
       completedTopics: [],
+      assignedAt: null,
     });
     setCurrentQuestionIdx(0);
     setAnswers({});
@@ -839,7 +999,7 @@ function AppContent() {
             </motion.div>
           )}
 
-          {state.currentStep === 'pathway-selection' && (
+          {state.currentStep === 'pathway-selection' && !state.selectedPathway && (
             <motion.div 
               key="pathway-selection"
               initial={{ opacity: 0, scale: 0.95 }}
@@ -860,7 +1020,7 @@ function AppContent() {
                 <motion.button
                   whileHover={{ y: -5 }}
                   onClick={() => {
-                    const newState = { ...state, selectedPathway: 'upskill' as PathwayType, currentStep: 'assessment' as ProgramStep };
+                    const newState = { ...state, selectedPathway: 'upskill' as PathwayType };
                     setState(newState);
                     saveState(newState);
                   }}
@@ -874,6 +1034,11 @@ function AppContent() {
                     <p className="text-zinc-500 leading-relaxed">
                       Master your current role. We'll identify specific gaps in your baseline skills and provide advanced training to make you an expert in your field.
                     </p>
+                    <div className="p-4 bg-indigo-50 rounded-xl border border-indigo-100 mt-4">
+                      <p className="text-xs text-indigo-700 leading-relaxed italic">
+                        <strong>Note:</strong> This pathway focuses on your selected role, using the assessment to identify specific knowledge gaps and providing a specialized curriculum to reach expert level.
+                      </p>
+                    </div>
                   </div>
                   <div className="pt-4 flex items-center gap-2 text-indigo-600 font-bold">
                     Choose Up-Skilling <ArrowRight className="w-4 h-4" />
@@ -883,7 +1048,7 @@ function AppContent() {
                 <motion.button
                   whileHover={{ y: -5 }}
                   onClick={() => {
-                    const newState = { ...state, selectedPathway: 'right-skill' as PathwayType, currentStep: 'assessment' as ProgramStep };
+                    const newState = { ...state, selectedPathway: 'right-skill' as PathwayType };
                     setState(newState);
                     saveState(newState);
                   }}
@@ -897,11 +1062,144 @@ function AppContent() {
                     <p className="text-zinc-500 leading-relaxed">
                       Pivot to your best fit. We'll assess your natural aptitudes across multiple domains to find the role where you'll be most successful.
                     </p>
+                    <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-100 mt-4">
+                      <p className="text-xs text-emerald-700 leading-relaxed italic">
+                        <strong>Note:</strong> Your recommendation will be calculated based on your diagnostic assessment scores, baseline roles, and existing skills to find your highest-aptitude match.
+                      </p>
+                    </div>
                   </div>
                   <div className="pt-4 flex items-center gap-2 text-emerald-600 font-bold">
                     Choose Right-Skilling <ArrowRight className="w-4 h-4" />
                   </div>
                 </motion.button>
+              </div>
+            </motion.div>
+          )}
+
+          {state.currentStep === 'pathway-selection' && state.selectedPathway === 'right-skill' && (
+            <motion.div 
+              key="right-skill-intro"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="max-w-3xl mx-auto space-y-12"
+            >
+              <div className="text-center space-y-6">
+                <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold uppercase tracking-widest">
+                  <Zap className="w-4 h-4" /> Right-Skilling Pathway
+                </div>
+                <h2 className="text-5xl font-bold tracking-tight text-zinc-900">Finding Your Best Fit</h2>
+                <p className="text-zinc-500 text-xl max-w-2xl mx-auto leading-relaxed">
+                  Before we begin the assessment, here's how we'll determine your ideal career path.
+                </p>
+              </div>
+
+              <div className="p-10 glass-card rounded-3xl border border-zinc-200 space-y-8">
+                <div className="flex gap-6">
+                  <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-xl flex items-center justify-center shrink-0">
+                    <ClipboardCheck className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-2">
+                    <h4 className="text-xl font-bold text-zinc-900">Diagnostic Assessment</h4>
+                    <p className="text-zinc-500 leading-relaxed">
+                      We'll evaluate your natural aptitudes across multiple domains like medical terminology, insurance follow-up, and patient communication.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex gap-6">
+                  <div className="w-12 h-12 bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center shrink-0">
+                    <User className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-2">
+                    <h4 className="text-xl font-bold text-zinc-900">Baseline Integration</h4>
+                    <p className="text-zinc-500 leading-relaxed">
+                      Your existing experience as a {state.baselineRoles[0]?.role || 'healthcare professional'} and your current skills will be factored in to boost recommendations for roles that leverage your strengths.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex gap-6">
+                  <div className="w-12 h-12 bg-amber-100 text-amber-600 rounded-xl flex items-center justify-center shrink-0">
+                    <Target className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-2">
+                    <h4 className="text-xl font-bold text-zinc-900">Intelligent Mapping</h4>
+                    <p className="text-zinc-500 leading-relaxed">
+                      Our algorithm combines these data points to recommend the specialization where you have the highest probability of success and the shortest path to mastery.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="pt-6 border-t border-zinc-100">
+                  <button 
+                    onClick={() => {
+                      const newState = { ...state, currentStep: 'assessment' as ProgramStep };
+                      setState(newState);
+                      saveState(newState);
+                    }}
+                    className="w-full py-5 bg-emerald-600 text-white rounded-2xl font-bold text-lg hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 flex items-center justify-center gap-2"
+                  >
+                    Start Diagnostic Assessment <ArrowRight className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex justify-center">
+                <button 
+                  onClick={() => setState(prev => ({ ...prev, selectedPathway: null }))}
+                  className="text-sm font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-900 transition-colors"
+                >
+                  Back to Pathway Selection
+                </button>
+              </div>
+            </motion.div>
+          )}
+
+          {state.currentStep === 'pathway-selection' && state.selectedPathway === 'upskill' && !state.selectedUpskillRoleId && (
+            <motion.div 
+              key="upskill-role-selection"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="max-w-4xl mx-auto space-y-12"
+            >
+              <div className="text-center space-y-6">
+                <div className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-100 text-indigo-700 rounded-full text-xs font-bold uppercase tracking-widest">
+                  <Target className="w-4 h-4" /> Specialization Focus
+                </div>
+                <h2 className="text-5xl font-bold tracking-tight text-zinc-900">Which role are you upskilling for?</h2>
+                <p className="text-zinc-500 text-xl max-w-2xl mx-auto leading-relaxed">
+                  Select your target role to customize your capability assessment.
+                </p>
+              </div>
+
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {TRACKS.map((track) => (
+                  <button
+                    key={track.id}
+                    onClick={() => {
+                      const newState = { 
+                        ...state, 
+                        selectedUpskillRoleId: track.id, 
+                        currentStep: 'assessment' as ProgramStep 
+                      };
+                      setState(newState);
+                      saveState(newState);
+                    }}
+                    className="p-6 glass-card rounded-2xl border border-zinc-200 text-left hover:border-indigo-500 hover:shadow-lg transition-all group"
+                  >
+                    <h4 className="font-bold text-zinc-900 group-hover:text-indigo-600 transition-colors">{track.name}</h4>
+                    <p className="text-xs text-zinc-500 mt-2 line-clamp-2">{track.description}</p>
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex justify-center">
+                <button 
+                  onClick={() => setState(prev => ({ ...prev, selectedPathway: null }))}
+                  className="text-sm font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-900 transition-colors"
+                >
+                  Back to Pathway Selection
+                </button>
               </div>
             </motion.div>
           )}
@@ -916,38 +1214,39 @@ function AppContent() {
               <div className="flex justify-between items-center">
                 <div className="space-y-1">
                   <h2 className="text-2xl font-bold">Capability Assessment</h2>
-                  <p className="text-zinc-500 text-sm">Step {currentQuestionIdx + 1} of {ASSESSMENT_QUESTIONS.length}</p>
+                  <p className="text-zinc-500 text-sm">Step {currentQuestionIdx + 1} of {filteredQuestions.length}</p>
                 </div>
-                <div className="flex gap-1">
-                  {ASSESSMENT_QUESTIONS.map((_, i) => (
-                    <div 
-                      key={i} 
-                      className={cn(
-                        "h-1.5 w-8 rounded-full transition-all duration-300",
-                        i === currentQuestionIdx ? "bg-emerald-600 w-12" : 
-                        i < currentQuestionIdx ? "bg-emerald-200" : "bg-zinc-200"
-                      )} 
+                <div className="flex items-center gap-4">
+                  <div className="text-right hidden sm:block">
+                    <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Progress</span>
+                    <div className="text-xs font-bold text-emerald-600">{Math.round(((currentQuestionIdx + 1) / filteredQuestions.length) * 100)}%</div>
+                  </div>
+                  <div className="w-32 h-2 bg-zinc-100 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: `${((currentQuestionIdx + 1) / filteredQuestions.length) * 100}%` }}
+                      className="h-full bg-emerald-600 transition-all duration-300"
                     />
-                  ))}
+                  </div>
                 </div>
               </div>
 
               <div className="glass-card rounded-3xl p-10 space-y-8 shadow-xl shadow-zinc-200/50">
                 <div className="space-y-6">
                   <div className="inline-block px-3 py-1 bg-zinc-100 text-zinc-500 rounded-full text-[10px] font-bold uppercase tracking-widest">
-                    {ASSESSMENT_QUESTIONS[currentQuestionIdx].category} domain
+                    {filteredQuestions[currentQuestionIdx].category} domain
                   </div>
                   <h3 className="text-2xl font-bold leading-tight">
-                    {ASSESSMENT_QUESTIONS[currentQuestionIdx].text}
+                    {filteredQuestions[currentQuestionIdx].text}
                   </h3>
                   <div className="grid gap-4">
-                    {ASSESSMENT_QUESTIONS[currentQuestionIdx].options.map((opt, i) => {
-                      const isSelected = answers[ASSESSMENT_QUESTIONS[currentQuestionIdx].id] === opt;
+                    {filteredQuestions[currentQuestionIdx].options.map((opt, i) => {
+                      const isSelected = answers[filteredQuestions[currentQuestionIdx].id] === opt;
                       return (
                         <button 
                           key={i} 
                           disabled={showInsight}
-                          onClick={() => handleAnswer(ASSESSMENT_QUESTIONS[currentQuestionIdx].id, opt)}
+                          onClick={() => handleAnswer(filteredQuestions[currentQuestionIdx].id, opt)}
                           className={cn(
                             "w-full p-6 text-left rounded-2xl border transition-all group flex justify-between items-center",
                             isSelected ? "border-emerald-600 bg-emerald-50" : 
@@ -976,13 +1275,13 @@ function AppContent() {
                         <Info className="w-4 h-4" /> Domain Insight
                       </div>
                       <p className="text-zinc-700 leading-relaxed">
-                        {ASSESSMENT_QUESTIONS[currentQuestionIdx].insight}
+                        {filteredQuestions[currentQuestionIdx].insight}
                       </p>
                       <button 
                         onClick={nextQuestion}
                         className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all flex items-center justify-center gap-2"
                       >
-                        {currentQuestionIdx === ASSESSMENT_QUESTIONS.length - 1 ? 'Finish Assessment' : 'Next Question'} <ArrowRight className="w-4 h-4" />
+                        {currentQuestionIdx === filteredQuestions.length - 1 ? 'Finish Assessment' : 'Next Question'} <ArrowRight className="w-4 h-4" />
                       </button>
                     </motion.div>
                   )}
@@ -1074,7 +1373,12 @@ function AppContent() {
 
                       <button 
                         onClick={() => {
-                          const newState = { ...state, assignedTrack: primaryTrack, currentStep: 'upskilling' as ProgramStep };
+                          const newState = { 
+                            ...state, 
+                            assignedTrack: primaryTrack, 
+                            currentStep: 'upskilling' as ProgramStep,
+                            assignedAt: new Date().toISOString()
+                          };
                           setState(newState);
                           saveState(newState);
                         }}
@@ -1116,7 +1420,12 @@ function AppContent() {
 
                       <button 
                         onClick={() => {
-                          const newState = { ...state, assignedTrack: secondaryTrack, currentStep: 'upskilling' as ProgramStep };
+                          const newState = { 
+                            ...state, 
+                            assignedTrack: secondaryTrack, 
+                            currentStep: 'upskilling' as ProgramStep,
+                            assignedAt: new Date().toISOString()
+                          };
                           setState(newState);
                           saveState(newState);
                         }}
@@ -1196,10 +1505,14 @@ function AppContent() {
               <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
                 <div className="space-y-2">
                   <div className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full text-[10px] font-bold uppercase tracking-widest">
-                    <BookOpen className="w-3 h-3" /> Up-Skilling Path
+                    <BookOpen className="w-3 h-3" /> {state.selectedPathway === 'upskill' ? 'Up-Skilling' : 'Right-Skilling'} Path
                   </div>
                   <h2 className="text-4xl font-bold">Curriculum Roadmap</h2>
-                  <p className="text-zinc-500 text-lg">Mastering the {state.assignedTrack.name} specialization.</p>
+                  <p className="text-zinc-500 text-lg">
+                    {state.selectedPathway === 'upskill' 
+                      ? `Mastering your ${state.assignedTrack.name} specialization.`
+                      : `Transitioning to your new ${state.assignedTrack.name} career.`}
+                  </p>
                 </div>
                 <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm flex items-center gap-6">
                   <div className="text-right">
@@ -1224,12 +1537,27 @@ function AppContent() {
                     <h3 className="text-xl font-bold">Specialist Resource Library</h3>
                   </div>
                   <div className="grid sm:grid-cols-2 md:grid-cols-4 gap-4">
-                    {[
+                    {(state.assignedTrack.id === 'medical-coder' ? [
+                      { title: 'ICD-10-CM Guidelines', type: 'PDF' },
+                      { title: 'CPT Modifier Guide', type: 'DOC' },
+                      { title: 'Coding Audit Checklist', type: 'XLS' },
+                      { title: 'Clinical Documentation Review', type: 'VIDEO' }
+                    ] : state.assignedTrack.id === 'medical-biller' ? [
+                      { title: 'Payer Portal Navigation', type: 'VIDEO' },
+                      { title: 'Denial Management SOP', type: 'XLS' },
+                      { title: 'ERA/EOB Analysis Guide', type: 'PDF' },
+                      { title: 'RCM KPI Dashboard', type: 'DOC' }
+                    ] : state.assignedTrack.id === 'medical-scribe' ? [
+                      { title: 'HPI Construction Guide', type: 'PDF' },
+                      { title: 'Medical Terminology Lexicon', type: 'DOC' },
+                      { title: 'EHR SmartPhrase Library', type: 'XLS' },
+                      { title: 'Real-time Scribing Demo', type: 'VIDEO' }
+                    ] : [
                       { title: 'HIPAA Compliance Guide', type: 'PDF' },
                       { title: 'EHR Workflow Templates', type: 'DOC' },
-                      { title: 'Medical Coding Cheat Sheet', type: 'XLS' },
-                      { title: 'Patient Communication Scripts', type: 'VIDEO' }
-                    ].map((res, i) => (
+                      { title: 'Patient Communication Scripts', type: 'VIDEO' },
+                      { title: 'Insurance Verification Checklist', type: 'XLS' }
+                    ]).map((res, i) => (
                       <div key={i} className="p-4 bg-white rounded-2xl border border-zinc-100 flex flex-col gap-2 hover:border-indigo-500 transition-all cursor-pointer group">
                         <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{res.type}</span>
                         <span className="text-sm font-bold text-zinc-700 group-hover:text-indigo-600">{res.title}</span>
@@ -1275,9 +1603,52 @@ function AppContent() {
                               )}
                             </div>
                             <div className="flex items-center gap-3 text-xs font-mono text-zinc-400 uppercase tracking-widest mb-4">
-                              <span>{module.duration}</span>
+                              <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> {module.duration}</span>
+                              <span>•</span>
+                              <div className="flex items-center gap-2">
+                                <span className="flex items-center gap-1 text-amber-600 font-bold">
+                                  <Clock className="w-3 h-3" /> Due: {getDueDate(state.assignedAt, module.daysToComplete)}
+                                </span>
+                                {!isModuleCompleted && state.assignedAt && (
+                                  <span className={cn(
+                                    "px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider",
+                                    (() => {
+                                      const assignedDate = new Date(state.assignedAt);
+                                      const dueDate = new Date(assignedDate.getTime() + (module.daysToComplete * 24 * 60 * 60 * 1000));
+                                      const today = new Date();
+                                      const diffTime = dueDate.getTime() - today.getTime();
+                                      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                                      return diffDays > 0 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700";
+                                    })()
+                                  )}>
+                                    {(() => {
+                                      const assignedDate = new Date(state.assignedAt);
+                                      const dueDate = new Date(assignedDate.getTime() + (module.daysToComplete * 24 * 60 * 60 * 1000));
+                                      const today = new Date();
+                                      const diffTime = dueDate.getTime() - today.getTime();
+                                      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                                      return diffDays > 0 ? `${diffDays}d left` : 'Overdue';
+                                    })()}
+                                  </span>
+                                )}
+                              </div>
                               <span>•</span>
                               <span>{moduleTopicsCount} Lessons</span>
+                            </div>
+
+                            {/* Learning Objectives */}
+                            <div className="mb-6 space-y-3">
+                              <h4 className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 flex items-center gap-2">
+                                <Target className="w-3 h-3" /> Learning Objectives
+                              </h4>
+                              <ul className="grid sm:grid-cols-2 gap-2">
+                                {module.learningObjectives.map((obj, idx) => (
+                                  <li key={idx} className="flex items-start gap-2 text-xs text-zinc-600">
+                                    <div className="mt-1 w-1 h-1 rounded-full bg-indigo-400 shrink-0" />
+                                    <span>{obj}</span>
+                                  </li>
+                                ))}
+                              </ul>
                             </div>
                             
                             {/* Module Progress Bar */}
@@ -1949,6 +2320,20 @@ function AppContent() {
       <AnimatePresence>
         {selectedSkill && (
           <SkillModal skill={selectedSkill} onClose={() => setSelectedSkill(null)} />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showFeedback && (
+          <FeedbackModal 
+            feedback={showFeedback} 
+            onClose={() => {
+              if (showFeedback.type === 'curriculum') {
+                nextStep();
+              }
+              setShowFeedback(null);
+            }} 
+          />
         )}
       </AnimatePresence>
 
